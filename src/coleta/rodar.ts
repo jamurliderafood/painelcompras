@@ -21,6 +21,10 @@ import type { FonteFlow } from '../flow/api';
 import {
   agregar, doGrupo, janelaDoMes, sobreFaturamento, subsDoGrupo, type Agregado, type Janela,
 } from '../analise/janela';
+
+// Reexportado porque a rotina de coleta precisa da mesma janela para gravar o
+// retrato — se ela calculasse a própria, um dia as duas divergiriam.
+export { janelaDoMes };
 import { diagnosticar, porDiaLancado, type Diagnostico } from '../analise/qualidade';
 import { avaliarMeta, quantoCustaODesvio, META_PADRAO, type AvaliacaoMeta, type Metas } from '../analise/metas';
 import { explicarIndicador, type Explicacao } from '../analise/dimensoes';
