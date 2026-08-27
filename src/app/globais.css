@@ -1,0 +1,105 @@
+:root {
+  --fundo: #0e1116;
+  --painel: #161b22;
+  --borda: #232a35;
+  --texto: #e6edf3;
+  --fraco: #8b949e;
+  --critico: #f85149;
+  --atencao: #d29922;
+  --bom: #3fb950;
+  --neutro: #58a6ff;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --fundo: #f6f8fa; --painel: #fff; --borda: #d8dee4;
+    --texto: #1f2328; --fraco: #59636e;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--fundo);
+  color: var(--texto);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 18px 24px; border-bottom: 1px solid var(--borda);
+}
+header a { color: inherit; text-decoration: none; }
+header .sub { color: var(--fraco); font-size: 13px; }
+
+main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+
+h1 { font-size: 22px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 28px 0 10px; }
+.legenda { color: var(--fraco); font-size: 13px; margin: 0 0 20px; }
+
+.cartao {
+  background: var(--painel); border: 1px solid var(--borda);
+  border-radius: 10px; padding: 16px 18px; margin-bottom: 14px;
+}
+.cartao a { color: inherit; text-decoration: none; }
+
+.cabecalho-cartao { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.cabecalho-cartao h3 { margin: 0; font-size: 17px; }
+
+.resumo { color: var(--texto); margin: 10px 0 0; font-size: 14px; }
+
+.selo {
+  font-size: 12px; padding: 2px 9px; border-radius: 999px;
+  border: 1px solid currentColor; white-space: nowrap;
+}
+.critico { color: var(--critico); }
+.atencao { color: var(--atencao); }
+.melhorou, .bom { color: var(--bom); }
+.estavel, .sem_base { color: var(--fraco); }
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--borda); vertical-align: top; }
+th { color: var(--fraco); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.efeitos { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 12px 0; }
+.efeito { border: 1px solid var(--borda); border-radius: 8px; padding: 10px 12px; }
+.efeito .rotulo { color: var(--fraco); font-size: 12px; }
+.efeito .valor { font-size: 20px; font-variant-numeric: tabular-nums; }
+
+.aviso {
+  border-left: 3px solid var(--atencao); background: color-mix(in srgb, var(--atencao) 8%, transparent);
+  padding: 10px 14px; border-radius: 0 8px 8px 0; font-size: 13px; margin: 12px 0;
+}
+
+/* ── Cartão da carteira ───────────────────────────────────────────────── */
+
+.cartao-link {
+  display: block; text-decoration: none; color: inherit;
+  transition: border-color .12s ease;
+}
+.cartao-link:hover { border-color: var(--neutro); }
+
+.selos { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.numeros {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px 20px; margin: 14px 0 10px;
+}
+.numero { display: flex; flex-direction: column; gap: 1px; }
+.numero strong { font-size: 24px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.numero .rotulo { color: var(--fraco); font-size: 12px; }
+
+.linha-compras {
+  margin: 0; padding-top: 10px; border-top: 1px solid var(--borda);
+  font-size: 13.5px; line-height: 1.7;
+}
+.linha-compras .rotulo { color: var(--fraco); }
+.linha-compras strong { font-variant-numeric: tabular-nums; }
+
+.ver-detalhe {
+  display: inline-block; margin-top: 10px;
+  font-size: 13px; color: var(--neutro);
+}

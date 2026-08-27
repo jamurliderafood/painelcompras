@@ -1,0 +1,38 @@
+-- ===========================================================================
+-- 03-carteira.sql — quem o radar acompanha
+-- ===========================================================================
+--
+-- Rode depois de 01 e 02. Pode rodar de novo: atualiza em vez de duplicar.
+--
+-- Uma coisa por cliente que NÃO está aqui: o token. Ele mora numa variável de
+-- ambiente na Vercel, com o nome derivado do `id` abaixo em maiúsculas e com
+-- hífen virando sublinhado:
+--
+--     id 'soffri-grill'   →   FLOW_TOKEN_SOFFRI_GRILL
+--
+-- Token em coluna de banco é vazamento esperando acontecer, e revogar um token
+-- que vazou é bem mais chato que trocar uma variável de ambiente.
+
+begin;
+
+insert into cliente (id, nome, flow_token_env) values
+  ('soffri-grill', 'Soffri Grill', 'FLOW_TOKEN_SOFFRI_GRILL')
+  -- Para cada restaurante novo, uma linha aqui e uma variável na Vercel:
+  -- ,('nome-do-cliente', 'Nome do Cliente', 'FLOW_TOKEN_NOME_DO_CLIENTE')
+on conflict (id) do update set
+  nome = excluded.nome, flow_token_env = excluded.flow_token_env;
+
+-- A régua de cada um.
+--
+-- Com histórico curto, é a meta que entrega valor — mais que qualquer
+-- comparação com o passado. O 0.30 abaixo é o padrão do próprio Flow, não a
+-- régua da Lidera: troque pela meta real acordada com o cliente antes de
+-- mostrar o painel para ele.
+--
+-- Métricas que aceitam meta: cmv, mao_de_obra, margem, impostos.
+-- O que não tiver meta é registrado e não é julgado.
+insert into cliente_config (cliente_id, metas) values
+  ('soffri-grill', '{"cmv": 0.30}'::jsonb)
+on conflict (cliente_id) do update set metas = excluded.metas;
+
+commit;
