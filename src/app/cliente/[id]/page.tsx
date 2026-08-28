@@ -3,8 +3,9 @@
  * o dado presta → está na régua → piorou.
  */
 
-import { listarClientes, fonteDe, hoje } from '../../../coleta/clientes';
-import { analisarCliente } from '../../../coleta/rodar';
+import { hoje } from '../../../coleta/clientes';
+import { carregarCliente } from '../../../coleta/painel';
+import { atualizarCliente } from '../../acoes';
 import { formatar } from '../../../analise/varredura';
 import { POR_CHAVE } from '../../../analise/catalogo';
 import { quantoCustaODesvio } from '../../../analise/metas';
@@ -17,6 +18,10 @@ const pontos = (v: number) =>
 const reais = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const pct = (v: number) => `${(v * 100).toFixed(1).replace('.', ',')}%`;
 const br = (d: string) => d.split('-').reverse().join('/');
+const hora = (iso: string) =>
+  new Date(iso).toLocaleTimeString('pt-BR', {
+    hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo',
+  });
 
 const ORIGEM: Record<string, string> = {
   ano_anterior: 'ano passado', mes_anterior: 'mês passado', nenhuma: '—',
@@ -32,10 +37,8 @@ export default async function Cliente({
   const { data: dataParam } = await searchParams;
   const data = dataParam ?? hoje();
 
-  const cliente = (await listarClientes()).find((c) => c.id === id);
-  if (!cliente) return <p>Cliente não encontrado.</p>;
-
-  const r = await analisarCliente(cliente, fonteDe(cliente), data);
+  const { relatorio: r, erro, fonte, apuradoEm } = await carregarCliente(id, data);
+  if (!r) return <p>{erro ?? 'Cliente não encontrado.'}</p>;
   const d = r.diagnostico;
 
   const piorou = r.achados.filter((a) => ['critico', 'atencao'].includes(a.severidade));
@@ -51,6 +54,20 @@ export default async function Cliente({
           ? ` · comparado com ${br(r.janelaBase.inicio)} a ${br(r.janelaBase.fim)}`
           : ' · sem período anterior para comparar'}
       </p>
+      <p className="legenda">
+        {/* De que horas é o número, e como pedir um mais novo. Sem isso, quem
+            abre o painel às 15h não tem como saber se está olhando o
+            movimento de hoje ou a foto das 5h. */}
+        {fonte === 'banco' && apuradoEm
+          ? <>Apurado às {hora(apuradoEm)}.</>
+          : <>Lido do Flow agora.</>}{' '}
+        <form action={atualizarCliente} style={{ display: 'inline' }}>
+          <input type="hidden" name="cliente" value={r.clienteId} />
+          <input type="hidden" name="data" value={data} />
+          <button type="submit" className="botao-atualizar">atualizar agora</button>
+        </form>
+      </p>
+
       <p className="resumo">{r.resumo}</p>
 
       {r.situacao === 'parcial' && (
@@ -270,6 +287,127 @@ export default async function Cliente({
                   </td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <h2>Preço pago por compra</h2>
+      <div className="cartao">
+        <p className="legenda">
+          O preço da própria nota: <code>valor ÷ quantidade</code>. Diferente da seção
+          acima, que compara o cadastro entre retratos — este vale desde a primeira
+          rodada. <strong>Só sai em unidade de peso ou volume:</strong> um quilo é
+          sempre um quilo, mas &quot;un&quot; tanto é a garrafa quanto o fardo.
+        </p>
+
+        {!r.precoPago.comprasTotal ? (
+          <p className="legenda">Nenhuma compra lançada no período.</p>
+        ) : (
+          <>
+            <p className="legenda">
+              {r.precoPago.comprasTotal - r.precoPago.comprasSemQuantidade} de{' '}
+              {r.precoPago.comprasTotal} compras têm quantidade lançada
+              {r.precoPago.ignoradasPorUnidade > 0 && (
+                <> · {r.precoPago.ignoradasPorUnidade} série(s) fora da conta por
+                a unidade ser &quot;un&quot;</>
+              )}
+              .
+            </p>
+
+            {r.precoPago.altas.length === 0 && r.precoPago.quedas.length === 0 ? (
+              <p className="legenda">
+                Nenhum insumo com variação relevante em unidade de peso ou volume.
+              </p>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Insumo</th>
+                    <th className="num">De</th>
+                    <th className="num">Para</th>
+                    <th className="num">Variação</th>
+                    <th>Período</th>
+                    <th>Fornecedor</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...r.precoPago.altas, ...r.precoPago.quedas].map((m) => (
+                    <tr key={m.insumoId}>
+                      <td>
+                        {m.nome}
+                        <br />
+                        <span className="legenda">{m.compras.length} compras</span>
+                      </td>
+                      <td className="num">{reais(m.de)}/{m.unidade}</td>
+                      <td className="num">{reais(m.para)}/{m.unidade}</td>
+                      <td className={`num ${m.variacao > 0 ? 'critico' : 'melhorou'}`}>
+                        {m.variacao > 0 ? '+' : '−'}
+                        {Math.abs(m.variacao * 100).toFixed(0)}%
+                        <br />
+                        <span className="legenda">{reais(Math.abs(m.custoDaAlta))} na última compra</span>
+                      </td>
+                      <td className="legenda">{m.primeiraEm} → {m.ultimaEm}</td>
+                      <td className="legenda">{m.fornecedores.join(', ') || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+      </div>
+
+      <h2>O gasto mudou por preço ou por volume?</h2>
+      <div className="cartao">
+        <p className="legenda">
+          <code>Δgasto = (p₁ − p₀)·q₁ + (q₁ − q₀)·p₀</code>. Se a diferença é preço, a
+          conversa é com o fornecedor; se é volume, é com a ficha técnica, a porção e o
+          desperdício.
+        </p>
+
+        {r.decomposicao.ressalva ? (
+          // A ressalva substitui a tabela, não acompanha: com base incompleta o
+          // número está certo e a leitura está errada, e ninguém lê a nota de
+          // rodapé de uma tabela que já respondeu a pergunta.
+          <p className="aviso">{r.decomposicao.ressalva}</p>
+        ) : r.decomposicao.efeitos.filter((e) => e.confiavel).length === 0 ? (
+          <p className="legenda">
+            Nada com quantidade lançada nos dois períodos e unidade de peso ou volume.
+          </p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Insumo</th>
+                <th className="num">Δ gasto</th>
+                <th className="num">Efeito preço</th>
+                <th className="num">Efeito volume</th>
+                <th>É</th>
+              </tr>
+            </thead>
+            <tbody>
+              {r.decomposicao.efeitos.filter((e) => e.confiavel).map((e) => {
+                const preco = Math.abs(e.efeitoPreco) > Math.abs(e.efeitoVolume);
+                return (
+                  <tr key={e.insumoId}>
+                    <td>
+                      {e.nome}
+                      <br />
+                      <span className="legenda">
+                        {reais(e.precoAntes)}→{reais(e.precoAgora)}/{e.unidade} ·{' '}
+                        {e.qtdAntes.toFixed(1)}→{e.qtdAgora.toFixed(1)}{e.unidade}
+                      </span>
+                    </td>
+                    <td className={`num ${e.variacaoGasto > 0 ? 'critico' : 'melhorou'}`}>
+                      {reais(e.variacaoGasto)}
+                    </td>
+                    <td className="num">{reais(e.efeitoPreco)}</td>
+                    <td className="num">{reais(e.efeitoVolume)}</td>
+                    <td className={preco ? 'critico' : ''}>{preco ? 'PREÇO' : 'VOLUME'}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}

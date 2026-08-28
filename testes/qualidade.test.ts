@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectarReclassificacao, diagnosticar, diasDeFechamento, porDiaLancado } from '../src/analise/qualidade';
+import { detectarReclassificacao, diagnosticar, diasDeFechamento, porDiaLancado, inicioConfiavel, janelaEstaCompleta, coberturaDaJanela } from '../src/analise/qualidade';
+import { janelaDoMes } from '../src/analise/janela';
 import { insumo, lanc, mes } from './apoio';
 
 const JULHO = { inicio: '2026-07-01', fim: '2026-07-25' };
@@ -26,7 +27,11 @@ test('dias sem lançamento de receita viram lacuna e derrubam a confiança', () 
   const d = diagnosticar(dados, [], AGOSTO);
 
   assert.equal(d.lacunas.length, 7);
-  assert.equal(d.diasComReceita, 18);
+  // 24 dias esperados (1 a 24 — o dia 25 é o analisado e sai da conta), menos
+  // as 7 lacunas. O dia analisado sai dos DOIS lados da fração: contá-lo só no
+  // numerador é o que dava cobertura acima de 100% no dado real.
+  assert.equal(d.diasEsperados, 24);
+  assert.equal(d.diasComReceita, 17);
   assert.ok(d.cobertura < 0.8, `cobertura ${d.cobertura}`);
   assert.equal(d.confianca, 'baixa');
   assert.match(d.avisos[0], /subestimados/);
@@ -77,7 +82,24 @@ test('cadastro de insumo furado aparece no diagnóstico', () => {
   const d = diagnosticar(dados, insumos, AGOSTO);
   assert.equal(d.insumosSemPreco, 63);
   assert.equal(d.insumosTotal, 291);
-  assert.match(d.avisos.join(' '), /63 de 291 insumos estão sem preço/);
+  assert.match(d.avisos.join(' '), /63 de 291 insumos comprados estão sem preço/);
+});
+
+test('insumo preparado sem preço não é falha de cadastro', () => {
+  // O custo de um preparado sai da ficha (`comps`), não de compra. Na carteira
+  // real, os 3.716 insumos `pronto` têm preço e os 126 sem preço são todos
+  // preparados: cobrar preço deles seriam 126 alarmes falsos e nenhum
+  // verdadeiro.
+  const dados = mes({ mes: 8, ate: 25, receitaPorDia: 3000 });
+  const insumos = [
+    ...[...Array(20)].map((_, i) => ({ ...insumo(`preparado ${i}`), tipo: 'preparado' as const })),
+    ...[...Array(80)].map((_, i) => insumo(`comprado ${i}`, 10)),
+  ];
+
+  const d = diagnosticar(dados, insumos, AGOSTO);
+  assert.equal(d.insumosSemPreco, 0);
+  assert.equal(d.insumosTotal, 80);
+  assert.equal(d.avisos.some((a) => a.includes('sem preço')), false);
 });
 
 test('lançamento com data muito fora do resto é apontado', () => {
@@ -120,4 +142,88 @@ test('subcategoria que sumiu sem nada crescer no lugar vira ausência, não recl
   assert.equal(d.reclassificacoes.length, 0);
   assert.deepEqual(d.ausencias.map((a) => a.sub), ['Salários']);
   assert.match(d.avisos.join(' '), /parecem melhores do que estão/);
+});
+
+test('lançamento perdido lá atrás não define desde quando temos dado', () => {
+  // O King tem um lançamento de 2017 e o Aukai tem de 2022. Usar `datas[0]`
+  // acredita neles e desarma a trava de base parcial justamente nos clientes
+  // que mais precisam dela.
+  const datas = ['2017-08-26', '2026-07-13', '2026-07-14', '2026-07-20',
+                 '2026-08-01', '2026-08-02', '2026-08-03', '2026-08-04',
+                 '2026-08-05', '2026-08-06'].sort();
+  assert.equal(inicioConfiavel(datas), '2026-07-13');
+});
+
+test('sem lançamento nenhum não há começo confiável', () => {
+  assert.equal(inicioConfiavel([]), undefined);
+});
+
+test('um PAR de lançamentos perdidos próximos não engana o começo', () => {
+  // O King tem 2020-07-30 e 2020-08-05 — seis dias entre si, e seis anos de
+  // distância do resto. Procurando de frente para trás, a conta parava neles,
+  // e o radar passava a comparar agosto de 2026 com agosto de 2025, um ano em
+  // que o cliente não existia no Flow.
+  const datas = [
+    '2017-08-26', '2018-08-26', '2020-07-30', '2020-08-05', '2022-07-29',
+    '2026-04-01', '2026-04-02', '2026-04-03',
+  ];
+  assert.equal(inicioConfiavel(datas), '2026-04-01');
+});
+
+test('histórico contínuo começa no primeiro dia, não 10% adiante', () => {
+  const datas = Array.from({ length: 31 }, (_, i) =>
+    `2026-07-${String(i + 1).padStart(2, '0')}`);
+  assert.equal(inicioConfiavel(datas), '2026-07-01');
+});
+
+test('lançamento com data no futuro não vira o começo do histórico', () => {
+  // O Restaurante JK tem dois lançamentos em novembro de 2026. Varrendo de trás
+  // para frente sem teto, eles viravam o ponto de partida e apagavam os seis
+  // meses de histórico do cliente com mais dado da carteira.
+  // Uso contínuo de março a agosto (nenhum vão passa de 60 dias), mais os dois
+  // lançamentos soltos de novembro.
+  const datas = [
+    '2026-03-01', '2026-04-15', '2026-06-01', '2026-07-15', '2026-08-26',
+    '2026-11-14', '2026-11-21',
+  ];
+  assert.equal(inicioConfiavel(datas, 60, '2026-08-27'), '2026-03-01');
+  // Sem o teto, o resultado é o próprio erro que isto corrige.
+  assert.equal(inicioConfiavel(datas, 60), '2026-11-14');
+});
+
+test('mês com buraco no meio não serve de base, mesmo tendo começado cheio', () => {
+  // É o caso que `dadosDesde` não pega: o cliente já usava o Flow, começou o
+  // mês lançando, e parou duas semanas no meio. O total fica subestimado e
+  // tudo que se comparar com ele parece ter crescido.
+  const furado = mes({ mes: 7, ate: 31, receitaPorDia: 3000, pularDias: [10, 11, 12, 13, 14, 15, 16, 17] });
+  assert.equal(janelaEstaCompleta(furado, janelaDoMes('2026-07-31')), false);
+});
+
+test('mês cheio serve de base', () => {
+  const cheio = mes({ mes: 7, ate: 31, receitaPorDia: 3000 });
+  assert.equal(janelaEstaCompleta(cheio, janelaDoMes('2026-07-31')), true);
+});
+
+test('um dia solto faltando não desqualifica o mês', () => {
+  // A régua é 95%, a mesma que o radar já usava para dizer que a confiança do
+  // dado é alta. Exigir 100% recusaria quase toda base real.
+  const quase = mes({ mes: 7, ate: 31, receitaPorDia: 3000, pularDias: [12] });
+  assert.equal(janelaEstaCompleta(quase, janelaDoMes('2026-07-31')), true);
+});
+
+test('período sem nenhum dia esperado não é base', () => {
+  // Cobertura devolve 1 por convenção quando não há dia a cobrir, e "100% de
+  // nada" não pode virar base.
+  assert.equal(janelaEstaCompleta([], janelaDoMes('2026-07-31')), false);
+});
+
+test('cobertura nunca passa de 100%', () => {
+  // Lançar no próprio dia analisado, ou num dia marcado como de fechamento,
+  // dava 27 de 26 no Aukai e 23 de 22 no Soffri. Inofensivo enquanto a
+  // cobertura só rebaixava confiança; grave quando ela decide se o período
+  // serve de base.
+  const dados = mes({ mes: 7, ate: 31, receitaPorDia: 3000 });
+  const c = coberturaDaJanela(dados, janelaDoMes('2026-07-31'));
+  assert.ok(c.cobertura <= 1, `cobertura foi ${c.cobertura}`);
+  assert.equal(c.diasComReceita, c.diasEsperados.length - c.lacunas.length);
 });

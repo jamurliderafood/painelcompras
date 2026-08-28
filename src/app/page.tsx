@@ -7,17 +7,23 @@
  * não entra.
  */
 
-import { listarClientes, fonteDe, hoje } from '../coleta/clientes';
-import { analisarCliente, type RelatorioCliente } from '../coleta/rodar';
+import { hoje } from '../coleta/clientes';
+import { carregarCarteira, falhou, type Falha } from '../coleta/painel';
+import type { RelatorioCliente } from '../coleta/rodar';
 
 export const dynamic = 'force-dynamic';
-
-type Falha = { erro: string; nome: string; clienteId: string };
-const falhou = (r: RelatorioCliente | Falha): r is Falha => 'erro' in r;
 
 const moeda = (v: number) =>
   v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
 const pct = (v: number) => `${(v * 100).toFixed(1).replace('.', ',')}%`;
+
+/** '2026-08-24' → '24/08'. */
+const diaMes = (d: string) => `${d.slice(8)}/${d.slice(5, 7)}`;
+
+const hora = (iso: string) =>
+  new Date(iso).toLocaleTimeString('pt-BR', {
+    hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo',
+  });
 
 export default async function Painel({
   searchParams,
@@ -27,16 +33,7 @@ export default async function Painel({
   const { data: dataParam } = await searchParams;
   const data = dataParam ?? hoje();
 
-  const clientes = await listarClientes();
-  const relatorios = await Promise.all(
-    clientes.map(async (c): Promise<RelatorioCliente | Falha> => {
-      try {
-        return await analisarCliente(c, fonteDe(c), data);
-      } catch (e) {
-        return { erro: (e as Error).message, nome: c.nome, clienteId: c.id };
-      }
-    }),
-  );
+  const { relatorios, fonte, apuradoEm } = await carregarCarteira(data);
 
   // Ordem: com quem falar primeiro. Dado ruim pesa porque, nesse caso, não se
   // sabe se piorou — e descobrir isso é mais urgente que qualquer variação.
@@ -46,9 +43,30 @@ export default async function Painel({
     r.metas.filter((m) => m.situacao === 'acima').length * 5 +
     (r.diagnostico.confianca === 'baixa' ? 15 : r.diagnostico.confianca === 'media' ? 5 : 0);
 
-  const ok = relatorios.filter((r): r is RelatorioCliente => !falhou(r))
-    .sort((a, b) => gravidade(b) - gravidade(a));
+  const lidos = relatorios.filter((r): r is RelatorioCliente => !falhou(r));
   const falhos = relatorios.filter(falhou);
+
+  // Cliente que não lançou receita nenhuma no período não tem número para pôr
+  // no cartão — e são muitos: dezenove dos vinte e oito da carteira em
+  // 27/08/2026. Misturados na lista, o peso de "confiança baixa" os promovia
+  // em bloco e empurrava para baixo quem tem problema medido (o Sabor Mineiro,
+  // 38,4% de CMV contra meta de 30%, caía para a décima posição, atrás de três
+  // clientes sem dado nenhum).
+  //
+  // Não somem: viram uma faixa no rodapé. Cliente que parou de lançar é
+  // exatamente a ligação que precisa ser feita — só não é a mesma conversa de
+  // quem está com o CMV estourado.
+  // Sem receita lançada E sem contagem de estoque. A contagem carrega as
+  // próprias vendas, então um cliente pode ter CMV medido sem lançar receita
+  // nenhuma — é o caso da DuZeca Pizzaria, com CMV real de 37,7% e nenhum
+  // lançamento de receita. Mandá-la para o rodapé esconderia justamente o
+  // número que ela tem.
+  const temNumero = (r: RelatorioCliente) =>
+    r.diagnostico.diasComReceita > 0 || r.cmvReal !== undefined;
+
+  const semLancamento = lidos.filter((r) => !temNumero(r));
+  const ok = lidos.filter(temNumero)
+    .sort((a, b) => gravidade(b) - gravidade(a));
 
   return (
     <>
@@ -56,6 +74,14 @@ export default async function Painel({
       <p className="legenda">
         Acumulado do mês contra o mesmo intervalo do ano passado — ou do mês passado,
         quando o ano passado não existe. Clique no cliente para o detalhe.
+      </p>
+      <p className="legenda">
+        {/* De que horas são os números. "Rodou e está assim" e "ainda não rodou
+            hoje" são coisas diferentes, e quem lê precisa saber qual das duas
+            está vendo antes de ligar para o cliente. */}
+        {fonte === 'banco' && apuradoEm
+          ? <>Números apurados às {hora(apuradoEm)}. Para reler o Flow de um cliente, abra o detalhe dele.</>
+          : <>Lido do Flow agora — a rodada de hoje ainda não passou por aqui.</>}
       </p>
 
       {falhos.map((f) => (
@@ -95,15 +121,34 @@ export default async function Painel({
             <div className="numeros">
               <div className="numero">
                 <span className="rotulo">Faturamento</span>
-                <strong>{moeda(r.principais.faturamento)}</strong>
+                {/* Faturamento zero num cliente que tem contagem não é
+                    faturamento zero — é receita não lançada. Um "R$ 0" grande
+                    ao lado de um CMV medido leria como casa parada. */}
+                <strong>
+                  {r.diagnostico.diasComReceita > 0 ? moeda(r.principais.faturamento) : '—'}
+                </strong>
+                {r.diagnostico.diasComReceita === 0 && (
+                  <span className="rotulo">receita não lançada</span>
+                )}
               </div>
               <div className="numero">
-                <span className="rotulo">CMV</span>
+                {/* "CMV" sozinho mentia por omissão: era CMV POR COMPRAS, que
+                    mede o que a casa comprou, não o que consumiu. No JK a
+                    diferença chegou a 13,5 pontos num mês. O rótulo agora diz
+                    de onde o número saiu, e a contagem diz de quando é. */}
+                <span className="rotulo">
+                  {r.principais.cmvOrigem === 'contagem'
+                    ? `CMV real · contagem de ${diaMes(r.cmvReal!.data)}`
+                    : 'CMV por compras'}
+                </span>
                 <strong className={meta && meta.situacao !== 'dentro' ? 'critico' : ''}>
                   {r.principais.cmv !== undefined ? pct(r.principais.cmv) : '—'}
                 </strong>
                 {meta?.alvo !== undefined && (
                   <span className="rotulo">meta {pct(meta.alvo)}</span>
+                )}
+                {r.principais.cmvOrigem === 'contagem' && r.cmvRealIdadeDias! > 45 && (
+                  <span className="rotulo">contagem de {r.cmvRealIdadeDias} dias atrás</span>
                 )}
               </div>
               <div className="numero">
@@ -149,11 +194,38 @@ export default async function Painel({
         );
       })}
 
-      {ok.length === 0 && falhos.length === 0 && (
+      {semLancamento.length > 0 && (
         <div className="cartao">
-          Nenhum cliente na carteira. Um cliente entra com uma variável
-          <code> FLOW_TOKEN_&lt;NOME&gt;</code>, com o token gerado no Flow em
-          admin → o restaurante → API de integração.
+          <div className="cabecalho-cartao">
+            <h3>
+              {semLancamento.length} cliente{semLancamento.length === 1 ? '' : 's'} sem
+              receita lançada no período
+            </h3>
+            <span className="selo atencao">nada a analisar</span>
+          </div>
+          <p className="legenda">
+            Não há número para comparar enquanto não houver lançamento. É a
+            conversa de <em>voltar a usar o Flow</em>, não a de resultado.
+          </p>
+          <p className="linha-compras">
+            {semLancamento
+              .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'))
+              .map((r, i) => (
+                <span key={r.clienteId}>
+                  {i > 0 && ' · '}
+                  <a href={`/cliente/${r.clienteId}?data=${data}`}>{r.nome}</a>
+                </span>
+              ))}
+          </p>
+        </div>
+      )}
+
+      {ok.length === 0 && semLancamento.length === 0 && falhos.length === 0 && (
+        <div className="cartao">
+          Nenhum cliente na carteira. Ela vem da tabela <code>organizacoes</code> do
+          Flow — se está vazia, falta <code>FLOW_DATABASE_URL</code> (a connection
+          string do Transaction pooler, com o usuário <code>radar_leitura</code>),
+          ou o banco respondeu só com restaurantes de demonstração e arquivados.
         </div>
       )}
     </>

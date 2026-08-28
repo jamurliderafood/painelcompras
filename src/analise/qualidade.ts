@@ -56,6 +56,9 @@ export interface Diagnostico {
   insumosSemPreco: number;
   insumosTotal: number;
   lancamentosForaDeFaixa: Lancamento[];
+  /** Lançamento datado depois do dia analisado. Não entra na janela, mas
+   *  quebra a conta de desde quando o cliente tem dado. */
+  lancamentosNoFuturo: Lancamento[];
   historicoDesde?: DataISO;
   avisos: string[];
 }
@@ -208,45 +211,115 @@ export function detectarReclassificacao(
   return saida;
 }
 
+export interface Cobertura {
+  /** Fração dos dias esperados que têm receita lançada. */
+  cobertura: number;
+  diasEsperados: DataISO[];
+  diasComReceita: number;
+  lacunas: DataISO[];
+  /** Dias da semana (0 = domingo) em que a casa parece não abrir. */
+  diasFechados: number[];
+}
+
+/**
+ * Quanto de um período está efetivamente lançado.
+ *
+ * Desconta os dias em que a casa não abre e o último dia da janela — que é o
+ * dia analisado, e quase nunca está lançado quando a rodada acontece; contá-lo
+ * como falta acusaria o cliente todo dia de não ter lançado o movimento de
+ * hoje.
+ */
+export function coberturaDaJanela(lancamentos: Lancamento[], janela: Janela): Cobertura {
+  const diasFechados = diasDeFechamento(lancamentos, janela.fim);
+  const comReceita = new Set(
+    recortar(lancamentos, janela).filter((l) => l.grupo === 'Receita').map((l) => l.data),
+  );
+  const diasEsperados = diasDaJanela(janela)
+    .filter((d) => d !== janela.fim && !diasFechados.includes(diaDaSemana(d)));
+  const lacunas = diasEsperados.filter((d) => !comReceita.has(d));
+
+  // Só conta dia que estava na conta. Contar todo dia com receita contra os
+  // dias esperados dava cobertura ACIMA de 100% — 27 de 26 no Aukai, 23 de 22
+  // no Soffri — porque o cliente lançou no dia analisado ou num dia que a
+  // detecção tinha marcado como fechado. Passa despercebido enquanto a
+  // cobertura só serve para rebaixar confiança; vira falha grave quando ela
+  // decide se um período serve de base.
+  const diasComReceita = diasEsperados.length - lacunas.length;
+
+  return {
+    // Sem dia esperado não há o que cobrir; 1 evita anunciar 0% de cobertura
+    // por falha da própria detecção.
+    cobertura: diasEsperados.length ? diasComReceita / diasEsperados.length : 1,
+    diasEsperados,
+    diasComReceita,
+    lacunas,
+    diasFechados,
+  };
+}
+
+/**
+ * A régua de "período completo", e é a mesma que o radar já usava para dizer
+ * que a confiança do dado é alta. Não é número novo: abaixo de 95% de cobertura
+ * o diagnóstico já rebaixava a confiança do período analisado, e um período que
+ * não serve para ser analisado não serve para ser base.
+ */
+export const COBERTURA_MINIMA = 0.95;
+
+/**
+ * O período serve de base de comparação?
+ *
+ * Regra do Jamur: *"se não tiver dados completos do mês passado, aí você não
+ * compara o dado com nenhum período"*. Um mês-base com buraco está subestimado,
+ * e tudo que se comparar com ele parece ter crescido — o painel anuncia
+ * melhora ou piora que é só lançamento faltando.
+ *
+ * Exige também que o período tenha algum dia esperado: um mês inteiro de dias
+ * fechados devolveria cobertura 1 por convenção, e "100% de nada" não é base.
+ */
+export function janelaEstaCompleta(
+  lancamentos: Lancamento[],
+  janela: Janela,
+  minima = COBERTURA_MINIMA,
+): boolean {
+  const c = coberturaDaJanela(lancamentos, janela);
+  return c.diasEsperados.length > 0 && c.cobertura >= minima;
+}
+
 export function diagnosticar(
   lancamentos: Lancamento[],
   insumos: Insumo[],
   janela: Janela,
   base?: Janela,
+  /** Lançamentos com data depois do dia analisado. Chegam separados porque a
+   *  análise inteira já os descartou — mas quem lê precisa saber que existem. */
+  futuros: Lancamento[] = [],
 ): Diagnostico {
-  const fechados = diasDeFechamento(lancamentos, janela.fim);
-  const comReceita = new Set(
-    recortar(lancamentos, janela).filter((l) => l.grupo === 'Receita').map((l) => l.data),
-  );
-
-  // O último dia da janela é o dia analisado, e quase nunca está lançado
-  // quando a rodada acontece — contá-lo como falta acusaria o cliente todo dia
-  // de não ter lançado o movimento de hoje.
-  const esperados = diasDaJanela(janela)
-    .filter((d) => d !== janela.fim && !fechados.includes(diaDaSemana(d)));
-  const lacunas = esperados.filter((d) => !comReceita.has(d));
-  // Sem dia esperado não há o que cobrir; 1 evita anunciar 0% de cobertura
-  // por falha da própria detecção.
-  const cobertura = esperados.length ? comReceita.size / esperados.length : 1;
+  const {
+    cobertura, diasEsperados: esperados, diasComReceita, lacunas, diasFechados: fechados,
+  } = coberturaDaJanela(lancamentos, janela);
 
   const datas = lancamentos.map((l) => l.data).sort();
   const historicoDesde = datas[0];
 
-  // Lançamento solto muito antes do resto — no Soffri havia um de 2022 entre
-  // dados de 2026. Não estraga soma nenhuma, mas distorce "desde quando temos
-  // dado", que é o que decide se a comparação com o ano passado existe.
   const doisMeses = 60 * 86_400_000;
-  const corpo = datas.filter((d) => d >= (datas[Math.floor(datas.length * 0.1)] ?? d));
-  const inicioDoCorpo = corpo[0];
+  const inicioDoCorpo = inicioConfiavel(datas, 60, janela.fim);
   const lancamentosForaDeFaixa = lancamentos.filter(
     (l) => inicioDoCorpo && Date.parse(inicioDoCorpo) - Date.parse(l.data) > doisMeses,
   );
+  const lancamentosNoFuturo = futuros;
 
   const reclassificacoes = base ? detectarReclassificacao(lancamentos, base, janela) : [];
   const ausencias = base
     ? detectarAusencias(lancamentos, base, janela, reclassificacoes.map((r) => r.grupo))
     : [];
-  const insumosSemPreco = insumos.filter((i) => !i.preco).length;
+  // Só insumo COMPRADO precisa de preço. Um `preparado` não tem preço porque
+  // o custo dele sai da ficha (`comps`) — cobrar preço de preparado é acusar
+  // cadastro incompleto onde o cadastro está certo. No dump de 27/08/2026 os
+  // 3.716 insumos `pronto` da carteira têm preço, e os 126 sem preço são
+  // preparados, todos eles: a checagem ingênua seria 126 alarmes falsos e
+  // nenhum verdadeiro.
+  const compraveis = insumos.filter((i) => i.tipo !== 'preparado');
+  const insumosSemPreco = compraveis.filter((i) => !i.preco).length;
 
   const avisos: string[] = [];
 
@@ -275,11 +348,19 @@ export function diagnosticar(
       `esses grupos parecem melhores do que estão, e o resultado do período está superestimado.`,
     );
   }
-  if (insumosTotalFalta(insumos, insumosSemPreco)) {
+  if (insumosTotalFalta(compraveis, insumosSemPreco)) {
     avisos.push(
-      `${insumosSemPreco} de ${insumos.length} insumos estão sem preço no cadastro ` +
-      `(${((insumosSemPreco / insumos.length) * 100).toFixed(0)}%). Enquanto isso não for ` +
+      `${insumosSemPreco} de ${compraveis.length} insumos comprados estão sem preço no cadastro ` +
+      `(${((insumosSemPreco / compraveis.length) * 100).toFixed(0)}%). Enquanto isso não for ` +
       `preenchido, não dá para calcular custo de ficha técnica nem comparar preço de compra.`,
+    );
+  }
+  if (lancamentosNoFuturo.length) {
+    avisos.push(
+      `${lancamentosNoFuturo.length} lançamento(s) com data no futuro ` +
+      `(${[...new Set(lancamentosNoFuturo.map((l) => l.data))].join(', ')}). ` +
+      `Não entram na janela deste mês, mas quebram a conta de desde quando o ` +
+      `cliente tem dado — provavelmente é ano ou mês digitado errado.`,
     );
   }
   if (lancamentosForaDeFaixa.length) {
@@ -297,14 +378,66 @@ export function diagnosticar(
   return {
     confianca, cobertura,
     diasEsperados: esperados.length,
-    diasComReceita: comReceita.size,
+    diasComReceita,
     lacunas, diasFechados: fechados,
     reclassificacoes, ausencias,
-    insumosSemPreco, insumosTotal: insumos.length,
+    insumosSemPreco, insumosTotal: compraveis.length,
     lancamentosForaDeFaixa,
+    lancamentosNoFuturo,
     historicoDesde,
     avisos,
   };
+}
+
+/**
+ * Desde quando o cliente vem usando o Flow **sem interrupção**.
+ *
+ * Lançamento perdido lá atrás distorce "desde quando temos dado", que é o que
+ * decide contra o que comparar. E há bastante deles: o Soffri tem um de 2022, o
+ * Aukai tem de 2022 e 2023, e o King tem de 2017, 2018, 2020, 2022 e 2024.
+ *
+ * A conta é feita **de trás para frente**, a partir do lançamento mais recente,
+ * parando no primeiro vão maior que `vaoMaximoDias`. Duas tentativas anteriores
+ * erraram, e cada uma errou de um jeito:
+ *
+ *  - **Percentil** (o 10º): num histórico contínuo ele cai sempre uns 10%
+ *    adiante, então um julho lançado do dia 1 ao 31 virava "começou dia 6".
+ *  - **Primeiro vão pequeno, de frente para trás**: basta um PAR de lançamentos
+ *    perdidos próximos entre si para a conta parar neles. É o caso do King, com
+ *    2020-07-30 e 2020-08-05 a seis dias de distância — a trava de base virava
+ *    2020, e o radar comparava agosto de 2026 com agosto de 2025, um ano em que
+ *    o cliente não existia no Flow, tratando o zero como base.
+ *
+ * De trás para frente nenhum dos dois acontece: o que se pergunta é até onde a
+ * série de hoje se estende para trás sem buraco, e é exatamente essa a
+ * pergunta.
+ *
+ * Limite conhecido: um cliente que ficou mais de dois meses sem lançar tem o
+ * histórico cortado ali. É o certo para o que isto decide — dado de antes de um
+ * buraco desse tamanho não serve de base — mas não é "desde quando ele é
+ * cliente", e não deve ser usado para isso.
+ */
+export function inicioConfiavel(
+  datasOrdenadas: string[],
+  vaoMaximoDias = 60,
+  /** Não enxergar além do dia analisado. Sem isto, lançamento com data no
+   *  FUTURO vira o ponto de partida da varredura e o cliente parece ter
+   *  começado depois de hoje: o Restaurante JK tem dois lançamentos em
+   *  novembro de 2026, e eles sozinhos apagavam os seis meses de histórico
+   *  dele — o radar passou a dizer "sem base" para o cliente com mais dado da
+   *  carteira. */
+  ate?: string,
+): string | undefined {
+  const unicas = [...new Set(datasOrdenadas)].filter((d) => !ate || d <= ate).sort();
+  if (!unicas.length) return undefined;
+
+  let inicio = unicas[unicas.length - 1];
+  for (let i = unicas.length - 1; i > 0; i--) {
+    const vao = (Date.parse(unicas[i]) - Date.parse(unicas[i - 1])) / 86_400_000;
+    if (vao > vaoMaximoDias) break;
+    inicio = unicas[i - 1];
+  }
+  return inicio;
 }
 
 const insumosTotalFalta = (insumos: Insumo[], semPreco: number) =>

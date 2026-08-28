@@ -7,7 +7,7 @@
  */
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type { RelatorioCliente } from '../coleta/rodar';
+import type { ClienteConfig, RelatorioCliente } from '../coleta/rodar';
 import type { Insumo, RetratoPreco } from '../flow/tipos';
 
 
@@ -24,6 +24,93 @@ export function banco(): SupabaseClient {
 
 export function temBanco(): boolean {
   return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+}
+
+/**
+ * Cadastra a carteira no nosso banco antes de gravar qualquer coisa.
+ *
+ * As cinco tabelas de histórico têm chave estrangeira para `cliente(id)`, e o
+ * `id` passou a ser o UUID da organização no Flow — que nunca esteve nessa
+ * tabela. Enquanto a carteira era cadastrada à mão isso não incomodava; desde
+ * que ela virou "o que estiver no Flow", ninguém preenche a lista, e a primeira
+ * rodada com o banco ligado falharia vinte e oito vezes seguidas, uma por
+ * cliente, com erro de chave estrangeira.
+ *
+ * Roda no começo de cada rodada, e não numa migração de uma vez só, porque
+ * restaurante novo aparece no Flow sem avisar ninguém — é justamente o que a
+ * troca de arquitetura comprou.
+ */
+export async function sincronizarClientes(clientes: ClienteConfig[]): Promise<void> {
+  if (!clientes.length) return;
+
+  const { error } = await banco().from('cliente').upsert(
+    clientes.map((c) => ({ id: c.id, nome: c.nome, ativo: true })),
+    { onConflict: 'id' },
+  );
+  if (error) throw new Error(`cliente: ${error.message}`);
+
+  // A meta vem do `cmvAlvo` do Flow e pode mudar lá. Guardamos para o
+  // histórico saber contra que régua o julgamento daquele dia foi feito — sem
+  // isso, mudar a meta hoje reescreveria o passado.
+  const { error: erroConfig } = await banco().from('cliente_config').upsert(
+    clientes.map((c) => ({ cliente_id: c.id, metas: c.metas ?? {} })),
+    { onConflict: 'cliente_id' },
+  );
+  if (erroConfig) throw new Error(`cliente_config: ${erroConfig.message}`);
+}
+
+/**
+ * O relatório do dia, inteiro, como o painel o consome.
+ *
+ * `snapshot_metrica` e `achado` continuam sendo gravados — são a série, e
+ * respondem "como o CMV andou nos últimos 90 dias". Mas desenhar a tela a
+ * partir delas exigiria refazer em SQL a análise que já foi feita, e boa parte
+ * do relatório (preço pago, decomposição, diagnóstico) não cabe naquele
+ * formato. Guardar o relatório pronto é o que permite o painel abrir sem
+ * reler o Flow.
+ */
+export async function salvarRelatorioCompleto(r: RelatorioCliente): Promise<void> {
+  const { error } = await banco().from('relatorio').upsert({
+    cliente_id: r.clienteId,
+    data_ref: r.data,
+    payload: r as unknown as Record<string, unknown>,
+    apurado_em: new Date().toISOString(),
+  }, { onConflict: 'cliente_id,data_ref' });
+  if (error) throw new Error(`relatorio: ${error.message}`);
+}
+
+export interface RelatorioSalvo {
+  relatorio: RelatorioCliente;
+  apuradoEm: string;
+}
+
+/** Os relatórios de um dia, para a carteira. */
+export async function lerRelatorios(data: string): Promise<RelatorioSalvo[]> {
+  const { data: linhas, error } = await banco()
+    .from('relatorio')
+    .select('payload, apurado_em')
+    .eq('data_ref', data);
+  if (error) throw new Error(`relatorio: ${error.message}`);
+  return (linhas ?? []).map((l: any) => ({
+    relatorio: l.payload as RelatorioCliente,
+    apuradoEm: l.apurado_em as string,
+  }));
+}
+
+/** O relatório de um cliente num dia. */
+export async function lerRelatorio(
+  clienteId: string,
+  data: string,
+): Promise<RelatorioSalvo | undefined> {
+  const { data: linhas, error } = await banco()
+    .from('relatorio')
+    .select('payload, apurado_em')
+    .eq('cliente_id', clienteId)
+    .eq('data_ref', data)
+    .limit(1);
+  if (error) throw new Error(`relatorio: ${error.message}`);
+  const l = (linhas ?? [])[0] as any;
+  return l ? { relatorio: l.payload as RelatorioCliente, apuradoEm: l.apurado_em } : undefined;
 }
 
 /** Grava as métricas apuradas. Separado da gravação dos achados de propósito:

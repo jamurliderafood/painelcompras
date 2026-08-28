@@ -25,13 +25,22 @@ import {
 // Reexportado porque a rotina de coleta precisa da mesma janela para gravar o
 // retrato — se ela calculasse a própria, um dia as duas divergiriam.
 export { janelaDoMes };
-import { diagnosticar, porDiaLancado, type Diagnostico } from '../analise/qualidade';
+import {
+  diagnosticar, inicioConfiavel, janelaEstaCompleta, porDiaLancado, type Diagnostico,
+} from '../analise/qualidade';
 import { avaliarMeta, quantoCustaODesvio, META_PADRAO, type AvaliacaoMeta, type Metas } from '../analise/metas';
 import { explicarIndicador, type Explicacao } from '../analise/dimensoes';
 import { variacoesDeCompra, type ResultadoCompras } from '../analise/compras';
 import { resumirPrecos, type ResumoPrecos } from '../analise/precos';
+import {
+  decomporCompras, resumirPrecoPago,
+  type ResultadoDecomposicao, type ResumoPrecoPago,
+} from '../analise/precoPago';
 import { varrer, type Achado, type DefMetrica } from '../analise/varredura';
-import { escolherBase } from '../analise/periodo';
+import { escolherBase, primeiroMesCheio } from '../analise/periodo';
+import {
+  cmvRealAnterior, cmvRealDoUltimo, idadeEmDias, type CmvApurado,
+} from '../analise/cmvReal';
 import { CATALOGO, GRUPO_PARA_METRICA } from '../analise/catalogo';
 
 export interface ClienteConfig {
@@ -61,8 +70,38 @@ export interface RelatorioCliente {
    *  sem quantidade na nota, gastar mais pode ser preço maior ou compra maior.
    *  Serve para entender a composição do CMV, não para acusar fornecedor. */
   gastos: ResultadoCompras;
+  /** O preço PAGO por compra (`valor / qtd`), quando o lançamento tem
+   *  quantidade. Diferente de `precos`, que compara o cadastro entre retratos:
+   *  este sai da própria nota e vale desde a primeira rodada. */
+  precoPago: ResumoPrecoPago;
+  /** A diferença de gasto aberta em efeito preço × efeito volume. Vem com a
+   *  ressalva junto: base incompleta transforma "comprou mais" em artefato. */
+  decomposicao: ResultadoDecomposicao;
   /** Os três números que abrem o cartão da carteira. */
-  principais: { faturamento: number; cmv?: number; resultado: number };
+  principais: {
+    faturamento: number;
+    cmv?: number;
+    resultado: number;
+    /** De onde saiu o CMV acima. `contagem` é consumo de verdade (estoque
+     *  inicial + compras − estoque final ÷ vendas); `compras` é o que se
+     *  comprou no período sobre o faturamento — mede compra, não consumo. */
+    cmvOrigem: 'contagem' | 'compras';
+  };
+  /** A última contagem de estoque, quando existe. É o CMV real. */
+  cmvReal?: CmvApurado;
+  /** A contagem anterior, para dizer se melhorou. */
+  cmvRealAnterior?: CmvApurado;
+  /** Há quantos dias a contagem foi feita — contagem velha descreve uma casa
+   *  que talvez não exista mais. */
+  cmvRealIdadeDias?: number;
+  /** As métricas do período, como a análise as calculou — já sem os
+   *  lançamentos com data no futuro.
+   *
+   *  Existe para a gravação não recalculá-las por conta própria. O cron fazia
+   *  isso, e fazia a partir do dado CRU: o histórico guardava um número e a
+   *  tela mostrava outro, e a diferença eram justamente os lançamentos que a
+   *  análise descarta. */
+  metricas: Record<string, number | undefined>;
   resumo: string;
 }
 
@@ -106,8 +145,18 @@ export async function analisarCliente(
    *  cadastro de agora; o histórico é nosso. */
   historicoPrecos: RetratoPreco[] = [],
 ): Promise<RelatorioCliente> {
-  const dados = await fonte.buscar(cfg.id);
+  const brutos = await fonte.buscar(cfg.id);
   const janela = janelaDoMes(data);
+
+  // **Nada com data no futuro entra na análise.** Existe de verdade na
+  // carteira: o Restaurante JK tem lançamentos em novembro de 2026, a Tenda
+  // Aldeia em setembro, e outro cliente em 30/08. Provavelmente é mês ou ano
+  // digitado errado. Eles saem de tudo — soma, série, preço, decomposição — e
+  // reaparecem só no diagnóstico, como aviso de cadastro.
+  const futuros = brutos.lancamentos.filter((l) => l.data > data);
+  const dados = futuros.length
+    ? { ...brutos, lancamentos: brutos.lancamentos.filter((l) => l.data <= data) }
+    : brutos;
 
   const cache = new Map<DataISO, Record<string, number | undefined>>();
   const metricasEm = (d: DataISO) => {
@@ -118,12 +167,28 @@ export async function analisarCliente(
   const ctx = {
     pisoRelevanciaReais: cfg.pisoRelevanciaReais ?? 200,
     comparaJanela: true,
-    // A base nunca é anterior ao primeiro lançamento: um mês em que o cliente
-    // ainda não usava o Flow tem faturamento zero, e zero como base transforma
-    // qualquer coisa em variação absurda.
-    dadosDesde: dados.lancamentos.length
-      ? dados.lancamentos.map((l) => l.data).sort()[0]
-      : undefined,
+    // A base nunca é anterior ao primeiro MÊS CHEIO. Duas armadilhas juntas:
+    //
+    //  - um mês em que o cliente ainda não usava o Flow tem faturamento zero, e
+    //    zero como base transforma qualquer coisa em variação absurda;
+    //  - o mês em que ele COMEÇOU a lançar é meio mês, e comparar mês inteiro
+    //    com meio mês mede quando a consultoria entrou, não desempenho.
+    //
+    // E não dá para usar `datas[0]`: o King tem um lançamento de 2017 e o Aukai
+    // tem de 2022 — um lançamento perdido desarmaria a trava inteira. Por isso
+    // o começo vem do `inicioConfiavel`, que ignora o que está muito fora.
+    dadosDesde: (() => {
+      const datas = dados.lancamentos.map((l) => l.data).sort();
+      // `data` como teto: lançamento com data no futuro (o JK tem dois em
+      // novembro) não pode virar o começo do histórico.
+      const inicio = inicioConfiavel(datas, 60, data);
+      return inicio ? primeiroMesCheio(inicio) : undefined;
+    })(),
+    // O terceiro degrau da cascata: mês passado incompleto não vira base.
+    // `dadosDesde` só sabe quando o cliente começou — não vê o mês que começou
+    // cheio e teve duas semanas sem lançamento no meio.
+    periodoUtilizavel: (d: DataISO) =>
+      janelaEstaCompleta(dados.lancamentos, janelaDoMes(d)),
   };
 
   const base = escolherBase(data, (d) => {
@@ -134,18 +199,27 @@ export async function analisarCliente(
   const janelaBase = base.origem === 'nenhuma' ? undefined : janelaDoMes(base.data);
 
   // 1. O dado presta?
-  const diagnostico = diagnosticar(dados.lancamentos, dados.insumos, janela, janelaBase);
+  const diagnostico = diagnosticar(dados.lancamentos, dados.insumos, janela, janelaBase, futuros);
 
   // 2. Está na régua?
   const metas = cfg.metas ?? META_PADRAO;
   const m = metricasEm(data);
+
+  // O CMV real, quando o cliente conta estoque. É ele que vai para a régua:
+  // no JK, "por compras" dizia 58,5% em agosto e a contagem do próprio cliente
+  // dizia 45,0% — o cliente segue muito acima da meta de 30%, mas 58,5% era
+  // exagero, e exagero num painel custa credibilidade na reunião.
+  const real = cmvRealDoUltimo(dados.cmvRegistros, data);
+  const realAnterior = cmvRealAnterior(dados.cmvRegistros, data);
+  const mComRegua = real ? { ...m, cmv: real.valor } : m;
+
   const avaliacoes = ([
-    ['cmv', 'CMV por compras'],
+    ['cmv', real ? `CMV real (contagem de ${diaMes(real.data)})` : 'CMV por compras'],
     ['mao_de_obra', 'Mão de obra'],
     ['margem', 'Margem'],
     ['impostos', 'Impostos'],
   ] as Array<[string, string]>)
-    .map(([chave, rotulo]) => avaliarMeta(chave, rotulo, m[chave], metas))
+    .map(([chave, rotulo]) => avaliarMeta(chave, rotulo, mComRegua[chave], metas))
     .filter((x): x is AvaliacaoMeta => x !== null && x.situacao !== 'sem_meta');
 
   // 3. Piorou?
@@ -205,6 +279,19 @@ export async function analisarCliente(
     ? variacoesDeCompra(dados.lancamentos, janelaBase, janela)
     : { altas: [], quedas: [], suspeitaDeRenomeacao: false };
 
+  // Preço pago não depende de janela: cada compra é um evento datado. Mas
+  // olhar o histórico inteiro traria alta de três meses atrás como se fosse
+  // notícia — o recorte é a janela atual mais a base, quando existe.
+  const desde = janelaBase ? janelaBase.inicio : janela.inicio;
+  const precoPago = resumirPrecoPago(
+    dados.lancamentos.filter((l) => l.data >= desde && l.data <= janela.fim),
+    dados.insumos,
+  );
+
+  const decomposicao: ResultadoDecomposicao = janelaBase
+    ? decomporCompras(dados.lancamentos, dados.insumos, janelaBase, janela)
+    : { efeitos: [] };
+
   // O retrato de hoje entra junto com os guardados. Se já houver um do mesmo
   // dia, o de agora vence — recoletar o mesmo dia não pode inventar mudança.
   const porData = new Map<DataISO, RetratoPreco>();
@@ -229,14 +316,27 @@ export async function analisarCliente(
     explicacoes,
     precos,
     gastos,
+    precoPago,
+    decomposicao,
+    cmvReal: real,
+    cmvRealAnterior: realAnterior,
+    // O CMV real entra junto das outras para ser guardado. Não é uma métrica
+    // de janela — vem de contagem de estoque, que acontece quando o cliente
+    // conta — e por isso não está no catálogo de indicadores vigiados.
+    metricas: real ? { ...m, cmv_real: real.valor } : m,
+    cmvRealIdadeDias: real ? idadeEmDias(real, data) : undefined,
     principais: {
       faturamento: m.faturamento ?? 0,
-      cmv: m.cmv,
+      cmv: real ? real.valor : m.cmv,
+      cmvOrigem: real ? 'contagem' : 'compras',
       resultado: m.resultado ?? 0,
     },
       resumo: resumir(cfg, diagnostico, avaliacoes, achados, explicacoes, precos, agregar(dados.lancamentos, janela)),
   };
 }
+
+/** '2026-08-24' → '24/08'. */
+const diaMes = (d: string) => `${d.slice(8)}/${d.slice(5, 7)}`;
 
 const moeda = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 

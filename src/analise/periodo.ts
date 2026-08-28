@@ -1,10 +1,18 @@
 /**
  * Contra o quê comparar o dia de hoje.
  *
- * A regra é a que você definiu: hoje é 26, então a base é 26 de agosto do ano
- * passado; se esse dia não existir, 26 do mês passado; se também não existir,
- * o dado é ignorado. Ignorado — não zerado, não "estável". A diferença
- * aparece no painel como "sem base".
+ * A regra é a que você definiu, e nesta ordem:
+ *
+ *   1. o mesmo período do **ano passado**;
+ *   2. se não houver dado lá, o mesmo período do **mês passado**;
+ *   3. se o mês passado não estiver **completo**, não se compara com nada.
+ *
+ * O terceiro degrau é uma recusa, não uma ressalva: o dado é **ignorado** — não
+ * zerado, não "estável". A diferença aparece no painel como "sem base".
+ *
+ * "Completo" é responsabilidade do `periodoUtilizavel`, abaixo. Sem ele a
+ * cascata aceita qualquer mês que tenha um lançamento, e um mês pela metade
+ * como base faz tudo parecer que cresceu.
  *
  * Duas armadilhas que este arquivo resolve e que não estavam no enunciado:
  *
@@ -90,12 +98,56 @@ export function alinharDiaSemana(alvo: DataISO, referencia: DataISO): DataISO {
   return somarDias(alvo, delta);
 }
 
+/**
+ * O primeiro mês que serve de base para comparação.
+ *
+ * Regra do Jamur, e ela é mais dura do que parece: *"se eles começaram no meio
+ * do mês passado, é porque o nosso trabalho começou no meio do mês — nesse
+ * caso você não traz histórico nenhum para a análise, só quando ele começar o
+ * mês cheio"*.
+ *
+ * Um cliente que passou a lançar dia 13 de julho não tem julho: tem meia
+ * dúzia de semanas soltas. Comparar agosto com esse julho não mede
+ * desempenho, mede quando a consultoria entrou. E o erro não é pequeno — na
+ * carteira de 27/08/2026 o Matsu Sushi (primeiro lançamento em 13/07) subia
+ * ao topo do painel com NOVE indicadores "críticos" e nenhuma meta fora da
+ * régua. Todos eram meio mês contra mês inteiro.
+ *
+ * Ressalvar não bastava. O mês parcial simplesmente não existe como base; a
+ * comparação volta quando houver um mês cheio, e até lá o painel diz "sem
+ * base", que é a verdade.
+ *
+ * A tolerância existe porque o dia 1 pode cair em dia de casa fechada: começar
+ * no dia 2 ou 3 ainda é começar no mês. Passou disso, o mês não conta.
+ */
+export function primeiroMesCheio(primeiroLancamento: DataISO, tolerancia = 5): DataISO {
+  const [ano, mes, dia] = partes(primeiroLancamento);
+  if (dia <= tolerancia) return montar(ano, mes, 1);
+  return mes === 12 ? montar(ano + 1, 1, 1) : montar(ano, mes + 1, 1);
+}
+
 export interface OpcoesBase {
   alinharDiaSemana?: boolean;
-  /** Antes desta data não confiamos no dado do cliente, mesmo que a API
-   *  devolva algo. Restaurante que começou a lançar em março tem janeiro
-   *  cheio de zeros que não são queda de faturamento. */
+  /** Antes desta data não confiamos no dado do cliente. Restaurante que
+   *  começou a lançar em março tem janeiro cheio de zeros que não são queda de
+   *  faturamento.
+   *
+   *  Quem preenche deve passar o começo do primeiro **mês cheio**
+   *  (`primeiroMesCheio`), não o primeiro lançamento: meio mês de base é pior
+   *  que base nenhuma, porque parece base. */
   dadosDesde?: DataISO;
+  /** Veto sobre o período candidato, aplicado a TODO degrau da cascata.
+   *
+   *  É por aqui que entra a exigência de mês completo: `dadosDesde` só sabe
+   *  quando o cliente começou, e não vê o mês que começou cheio e teve duas
+   *  semanas sem lançamento no meio. Um mês desses está subestimado, e tudo que
+   *  se comparar com ele parece ter crescido.
+   *
+   *  Fica em `OpcoesBase` — e não no `temBase` de quem chama — porque a
+   *  varredura escolhe uma base por indicador, e a regra tem de valer para
+   *  todas igualmente. Deixá-la no chamador significaria repeti-la em cada um
+   *  e esquecê-la em algum. */
+  periodoUtilizavel?: (d: DataISO) => boolean;
 }
 
 /**
@@ -128,6 +180,7 @@ export function escolherBase(
 
   for (const c of candidatos) {
     if (opts.dadosDesde && c.data < opts.dadosDesde) continue;
+    if (opts.periodoUtilizavel && !opts.periodoUtilizavel(c.data)) continue;
     if (!temBase(c.data)) continue;
 
     const aviso =

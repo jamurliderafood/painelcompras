@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   anoAnterior, mesAnterior, alinharDiaSemana, escolherBase, diaDaSemana,
+  primeiroMesCheio,
 } from '../src/analise/periodo';
 
 const sempre = () => true;
@@ -66,4 +67,70 @@ test('com alinhamento ligado, a base cai no mesmo dia da semana e o aviso some',
   assert.equal(b.origem, 'ano_anterior');
   assert.equal(diaDaSemana(b.data), diaDaSemana('2026-08-26'));
   assert.equal(b.aviso, undefined);
+});
+
+test('mês em que o cliente começou a lançar no meio não serve de base', () => {
+  // Regra do Jamur: se o trabalho começou dia 20, aquele mês não entra na
+  // análise — a comparação só volta quando houver um mês cheio.
+  assert.equal(primeiroMesCheio('2026-07-20'), '2026-08-01');
+  assert.equal(primeiroMesCheio('2026-07-13'), '2026-08-01');
+});
+
+test('começar no dia 1 (ou logo depois) conta como mês cheio', () => {
+  // O dia 1 pode cair em dia de casa fechada; começar no 2 ainda é começar
+  // no mês.
+  assert.equal(primeiroMesCheio('2026-07-01'), '2026-07-01');
+  assert.equal(primeiroMesCheio('2026-07-03'), '2026-07-01');
+});
+
+test('mês cheio que vira o ano', () => {
+  assert.equal(primeiroMesCheio('2026-12-20'), '2027-01-01');
+});
+
+test('base parcial é recusada de verdade, não só ressalvada', () => {
+  // Matsu Sushi: primeiro lançamento em 13/07, analisando agosto. Julho não
+  // existe como base — o painel diz "sem base", que é a verdade.
+  const b = escolherBase('2026-08-27', () => true, {
+    dadosDesde: primeiroMesCheio('2026-07-13'),
+  });
+  assert.equal(b.origem, 'nenhuma');
+});
+
+test('base cheia continua sendo aceita', () => {
+  const b = escolherBase('2026-08-27', () => true, {
+    dadosDesde: primeiroMesCheio('2026-07-01'),
+  });
+  assert.equal(b.origem, 'mes_anterior');
+  assert.equal(b.data, '2026-07-27');
+});
+
+test('a cascata para no terceiro degrau: mês passado incompleto não é base', () => {
+  // Regra do Jamur: ano passado → mês passado → se o mês passado não estiver
+  // completo, não se compara com nada.
+  const b = escolherBase('2026-08-27', () => true, {
+    periodoUtilizavel: (d) => !d.startsWith('2026-07') && !d.startsWith('2025-08'),
+  });
+  assert.equal(b.origem, 'nenhuma');
+});
+
+test('o ano passado tem precedência sobre o mês passado', () => {
+  const b = escolherBase('2026-08-27', () => true, { periodoUtilizavel: () => true });
+  assert.equal(b.origem, 'ano_anterior');
+  assert.equal(b.data, '2025-08-27');
+});
+
+test('sem ano passado, cai para o mês passado — se ele estiver completo', () => {
+  const b = escolherBase('2026-08-27', () => true, {
+    periodoUtilizavel: (d) => !d.startsWith('2025-'),
+  });
+  assert.equal(b.origem, 'mes_anterior');
+  assert.equal(b.data, '2026-07-27');
+});
+
+test('o veto vale para todo degrau, não só para o último', () => {
+  // Se valesse só no mês passado, um ano passado furado viraria base.
+  const b = escolherBase('2026-08-27', () => true, {
+    periodoUtilizavel: (d) => d.startsWith('2026-07'),
+  });
+  assert.equal(b.origem, 'mes_anterior');
 });

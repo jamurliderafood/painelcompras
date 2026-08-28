@@ -2,6 +2,23 @@
 -- 03-carteira.sql — quem o radar acompanha
 -- ===========================================================================
 --
+-- ## OBSOLETO desde 27/08/2026. Não rode.
+--
+-- A carteira deixou de ser cadastrada à mão: o radar lê a tabela
+-- `organizacoes` do banco do Flow, e um restaurante novo entra na rodada
+-- seguinte sozinho. Quem preenche a tabela `cliente` agora é o próprio radar,
+-- em cada rodada. Ver `04-carteira-automatica.sql`.
+--
+-- Fica aqui porque descreve o esquema de quem já rodou a versão antiga: o `id`
+-- era um apelido ('soffri-grill') e hoje é o UUID da organização no Flow.
+-- Linha antiga não atrapalha — só não é mais atualizada.
+--
+-- O conteúdo original segue abaixo, sem valor de execução.
+--
+-- ===========================================================================
+-- 03-carteira.sql — quem o radar acompanha
+-- ===========================================================================
+--
 -- Rode depois de 01 e 02. Pode rodar de novo: atualiza em vez de duplicar.
 --
 -- Uma coisa por cliente que NÃO está aqui: o token. Ele mora numa variável de
@@ -13,14 +30,14 @@
 -- Token em coluna de banco é vazamento esperando acontecer, e revogar um token
 -- que vazou é bem mais chato que trocar uma variável de ambiente.
 
-begin;
+-- begin;
 
-insert into cliente (id, nome, flow_token_env) values
-  ('soffri-grill', 'Soffri Grill', 'FLOW_TOKEN_SOFFRI_GRILL')
-  -- Para cada restaurante novo, uma linha aqui e uma variável na Vercel:
-  -- ,('nome-do-cliente', 'Nome do Cliente', 'FLOW_TOKEN_NOME_DO_CLIENTE')
-on conflict (id) do update set
-  nome = excluded.nome, flow_token_env = excluded.flow_token_env;
+-- insert into cliente (id, nome, flow_token_env) values
+--   ('soffri-grill', 'Soffri Grill', 'FLOW_TOKEN_SOFFRI_GRILL')
+--   -- Para cada restaurante novo, uma linha aqui e uma variável na Vercel:
+--   -- ,('nome-do-cliente', 'Nome do Cliente', 'FLOW_TOKEN_NOME_DO_CLIENTE')
+-- on conflict (id) do update set
+--   nome = excluded.nome, flow_token_env = excluded.flow_token_env;
 
 -- A régua de cada um.
 --
@@ -31,8 +48,8 @@ on conflict (id) do update set
 --
 -- Métricas que aceitam meta: cmv, mao_de_obra, margem, impostos.
 -- O que não tiver meta é registrado e não é julgado.
-insert into cliente_config (cliente_id, metas) values
-  ('soffri-grill', '{"cmv": 0.30}'::jsonb)
-on conflict (cliente_id) do update set metas = excluded.metas;
+-- insert into cliente_config (cliente_id, metas) values
+--   ('soffri-grill', '{"cmv": 0.30}'::jsonb)
+-- on conflict (cliente_id) do update set metas = excluded.metas;
 
-commit;
+-- commit;

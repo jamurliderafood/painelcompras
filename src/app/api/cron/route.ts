@@ -7,11 +7,9 @@
  * avisar que foi parcial é pior que análise nenhuma.
  */
 
-import { listarClientes, fonteDe, hoje } from '../../../coleta/clientes';
-import { analisarCliente, metricasDaJanela, janelaDoMes } from '../../../coleta/rodar';
-import {
-  lerRetratosPreco, salvarRelatorio, salvarRetratoPrecos, salvarRetrato, temBanco,
-} from '../../../db/supabase';
+import { abrirCarteira, listarClientes, fonteDe, hoje } from '../../../coleta/clientes';
+import { rodarCliente } from '../../../coleta/rodada';
+import { sincronizarClientes, temBanco } from '../../../db/supabase';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,26 +35,22 @@ export async function GET(req: Request): Promise<Response> {
   const data = url.searchParams.get('data') ?? hoje();
   const so = url.searchParams.get('cliente');
 
-  const clientes = (await listarClientes()).filter((c) => !so || c.id === so);
+  const carteira = abrirCarteira();
+  const todos = await listarClientes(carteira);
+
+  // A carteira inteira entra na nossa tabela `cliente` ANTES de qualquer
+  // gravação, mesmo quando a rodada é de um cliente só. As cinco tabelas de
+  // histórico têm chave estrangeira para ela, e restaurante que apareceu no
+  // Flow desde ontem ainda não está lá — era assim que a primeira rodada
+  // falharia inteira, com erro de chave estrangeira em cada cliente.
+  if (temBanco()) await sincronizarClientes(todos);
+
+  const clientes = todos.filter((c) => !so || c.id === so);
   const resultado: Array<Record<string, unknown>> = [];
 
   for (const cliente of clientes) {
     try {
-      const fonte = fonteDe(cliente);
-      // Uma leitura da API por cliente. A versão anterior buscava duas vezes
-      // — uma para analisar e outra para guardar os preços — e o payload de
-      // lançamentos vinha inteiro nas duas.
-      const dados = await fonte.buscar(cliente.id);
-      const fonteJaLida = { buscar: async () => dados };
-
-      const historico = temBanco() ? await lerRetratosPreco(cliente.id, data) : [];
-      const r = await analisarCliente(cliente, fonteJaLida, data, undefined, historico);
-
-      if (temBanco()) {
-        await salvarRetrato(cliente.id, data, metricasDaJanela(dados.lancamentos, janelaDoMes(data)));
-        await salvarRetratoPrecos(cliente.id, data, dados.insumos);
-        await salvarRelatorio(r);
-      }
+      const r = await rodarCliente(cliente, fonteDe(carteira), data);
 
       resultado.push({
         cliente: cliente.id,
