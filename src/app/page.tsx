@@ -56,13 +56,19 @@ export default async function Painel({
   // Não somem: viram uma faixa no rodapé. Cliente que parou de lançar é
   // exatamente a ligação que precisa ser feita — só não é a mesma conversa de
   // quem está com o CMV estourado.
-  // Sem receita lançada E sem contagem de estoque. A contagem carrega as
-  // próprias vendas, então um cliente pode ter CMV medido sem lançar receita
-  // nenhuma — é o caso da DuZeca Pizzaria, com CMV real de 37,7% e nenhum
-  // lançamento de receita. Mandá-la para o rodapé esconderia justamente o
-  // número que ela tem.
+  // O rodapé é para quem não lançou **nada** — nem receita, nem despesa.
+  //
+  // A régua era "sem receita lançada", e estava errada: um cliente que lançou
+  // R$ 12.000 de despesa e nenhuma receita não é um cliente parado, é um
+  // cliente com a receita atrasada — e essa é uma das conversas mais urgentes
+  // que existem, porque enquanto a receita não entra o resultado dele parece
+  // um prejuízo que não é. Escondê-lo no rodapé tirava da vista exatamente
+  // quem precisava de telefonema.
+  //
+  // A contagem de estoque também conta: ela carrega as próprias vendas, então
+  // há cliente com CMV medido e zero lançamento — a DuZeca Pizzaria é assim.
   const temNumero = (r: RelatorioCliente) =>
-    r.diagnostico.diasComReceita > 0 || r.cmvReal !== undefined;
+    (r.metricas.lancamentos ?? 0) > 0 || r.cmvReal !== undefined;
 
   const semLancamento = lidos.filter((r) => !temNumero(r));
   const ok = lidos.filter(temNumero)
@@ -156,6 +162,12 @@ export default async function Painel({
                 <strong className={r.principais.resultado < 0 ? 'critico' : ''}>
                   {moeda(r.principais.resultado)}
                 </strong>
+                {/* Sem receita lançada, "resultado" é a soma das despesas com o
+                    sinal trocado. Chamar isso de prejuízo seria mentira: o que
+                    falta é lançamento, não dinheiro. */}
+                {r.diagnostico.diasComReceita === 0 && r.principais.resultado < 0 && (
+                  <span className="rotulo">só despesa — falta a receita</span>
+                )}
               </div>
             </div>
 
@@ -199,13 +211,14 @@ export default async function Painel({
           <div className="cabecalho-cartao">
             <h3>
               {semLancamento.length} cliente{semLancamento.length === 1 ? '' : 's'} sem
-              receita lançada no período
+              lançamento nenhum no período
             </h3>
             <span className="selo atencao">nada a analisar</span>
           </div>
           <p className="legenda">
-            Não há número para comparar enquanto não houver lançamento. É a
-            conversa de <em>voltar a usar o Flow</em>, não a de resultado.
+            Nem receita, nem despesa. Não há número para analisar enquanto não
+            houver lançamento — é a conversa de <em>voltar a usar o Flow</em>,
+            não a de resultado.
           </p>
           <p className="linha-compras">
             {semLancamento
