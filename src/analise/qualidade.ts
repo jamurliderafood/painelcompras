@@ -42,6 +42,13 @@ export interface Ausencia {
 
 export interface Diagnostico {
   confianca: Confianca;
+  /** O período ainda não tem um único dia a cobrir — é o dia 1º do mês, ou um
+   *  mês em que a casa não abriu nenhum dia até agora.
+   *
+   *  Precisa de campo próprio porque "não há o que analisar" e "analisei e o
+   *  dado é ruim" são coisas opostas, e a cobertura sozinha não distingue: ela
+   *  vale 1 nos dois casos, por convenção. */
+  periodoRecemComecado: boolean;
   /** Dias com receita lançada ÷ dias em que se esperava lançamento. */
   cobertura: number;
   diasEsperados: number;
@@ -323,6 +330,13 @@ export function diagnosticar(
 
   const avisos: string[] = [];
 
+  if (esperados.length === 0) {
+    avisos.push(
+      `O período ${janela.inicio} a ${janela.fim} ainda não tem um dia fechado para ` +
+      `analisar — o mês está começando. Os números abaixo são o que foi lançado até ` +
+      `agora, e não descrevem o mês.`,
+    );
+  }
   if (lacunas.length) {
     avisos.push(
       `${lacunas.length} dia${lacunas.length === 1 ? '' : 's'} sem lançamento de receita ` +
@@ -371,12 +385,20 @@ export function diagnosticar(
     );
   }
 
+  // Sem dia esperado, a cobertura vale 1 por convenção — "cobri tudo que havia
+  // para cobrir", quando não havia nada. Deixar isso virar confiança ALTA foi
+  // o que aconteceu em 01/09/2026: os trinta clientes abriram o painel com
+  // cobertura de 100% e confiança alta sobre um mês que tinha começado naquela
+  // manhã. É o pior erro possível aqui — parece confiável e está vazio.
+  const periodoRecemComecado = esperados.length === 0;
+
   let confianca: Confianca = 'alta';
   if (cobertura < 0.95 || reclassificacoes.length || ausencias.length) confianca = 'media';
   if (cobertura < 0.8 || reclassificacoes.length > 1 || ausencias.length > 1) confianca = 'baixa';
+  if (periodoRecemComecado) confianca = 'baixa';
 
   return {
-    confianca, cobertura,
+    confianca, periodoRecemComecado, cobertura,
     diasEsperados: esperados.length,
     diasComReceita,
     lacunas, diasFechados: fechados,

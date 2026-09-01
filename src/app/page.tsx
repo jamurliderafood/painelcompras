@@ -111,7 +111,12 @@ export default async function Painel({
             <div className="cabecalho-cartao">
               <h3>{r.nome}</h3>
               <div className="selos">
-                {conf !== 'alta' && (
+                {/* "Mês começando" e "dado ruim" são coisas diferentes, e no dia
+                    1º de cada mês TODOS caem no primeiro caso. Marcar os trinta
+                    como dado ruim ensinaria o leitor a ignorar o selo. */}
+                {r.diagnostico.periodoRecemComecado ? (
+                  <span className="selo atencao">mês começando</span>
+                ) : conf !== 'alta' && (
                   <span className={`selo ${conf === 'baixa' ? 'critico' : 'atencao'}`}>
                     dado {conf === 'baixa' ? 'ruim' : 'médio'}
                   </span>

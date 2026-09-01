@@ -227,3 +227,22 @@ test('cobertura nunca passa de 100%', () => {
   assert.ok(c.cobertura <= 1, `cobertura foi ${c.cobertura}`);
   assert.equal(c.diasComReceita, c.diasEsperados.length - c.lacunas.length);
 });
+
+test('mês que começou hoje não pode sair com confiança alta', () => {
+  // 01/09/2026: a janela é 01/09 a 01/09, o dia analisado sai da conta de dias
+  // esperados, e sobra zero. A cobertura vale 1 por convenção — "cobri tudo
+  // que havia", quando não havia nada — e os trinta clientes abriram o painel
+  // com 100% de cobertura e confiança ALTA sobre um mês vazio.
+  const d = diagnosticar([], [], { inicio: '2026-09-01', fim: '2026-09-01' });
+
+  assert.equal(d.periodoRecemComecado, true);
+  assert.equal(d.confianca, 'baixa');
+  assert.match(d.avisos[0], /o mês está começando/);
+});
+
+test('mês em andamento com dado bom continua com confiança alta', () => {
+  const dados = mes({ mes: 8, ate: 25, receitaPorDia: 3000 });
+  const d = diagnosticar(dados, [], AGOSTO);
+  assert.equal(d.periodoRecemComecado, false);
+  assert.equal(d.confianca, 'alta');
+});
