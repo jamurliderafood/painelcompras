@@ -77,13 +77,29 @@ export interface Insumo {
   nome: string;
   categoria: string;
   subcategoria?: string;
-  /** Preço unitário do cadastro — atualiza quando entra nota nova.
+  /** **Preço por unidade de medida** — R$ por quilo, por litro, por unidade.
    *
-   *  Ausente **só** em insumo `preparado`, e ali a ausência é normal: o custo
-   *  de um preparado sai da ficha (`comps`), não de compra. Na carteira toda,
-   *  os 3.716 insumos `pronto` têm preço e os 126 sem preço são todos
-   *  preparados. Um `pronto` sem preço é falha de cadastro de verdade. */
+   *  Atenção: o Flow NÃO guarda esse número. Ele guarda o preço da EMBALAGEM
+   *  (`precoEmbalagem`) e quanto ela contém (`qtdEmbalagem`); o unitário é a
+   *  divisão dos dois, e é o que o próprio Flow mostra na coluna "custo por
+   *  unidade". O radar faz essa conta no mapeamento, para que nada aqui dentro
+   *  precise lembrar dela.
+   *
+   *  Por que importa: 1.602 dos 3.903 insumos da carteira têm embalagem
+   *  diferente de 1. Comparar preço de embalagem entre dois dias mistura
+   *  "ficou mais caro" com "comprou pacote maior" — o alho-poró do Soffri
+   *  aparecia subindo 124% quando o que mudou foi o tamanho da compra.
+   *
+   *  Ausente ou zerado em insumo `preparado`, onde é normal: o custo sai da
+   *  ficha (`comps`), não de compra. Um `pronto` sem preço é falha de cadastro
+   *  de verdade — e são 808 na carteira. */
   preco?: number;
+  /** O preço da embalagem, como o Flow guarda. Fica para conferência: é ele
+   *  que o cliente vê na nota. */
+  precoEmbalagem?: number;
+  /** Quanto a embalagem contém, na unidade `unidade`. R$ 7,77 o óleo de
+   *  0,900 L dá R$ 8,63 por litro. */
+  qtdEmbalagem?: number;
   unidade: string;
   fornecedor?: string;
 

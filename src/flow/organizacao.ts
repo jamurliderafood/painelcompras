@@ -98,12 +98,30 @@ export function insumoDe(b: Record<string, unknown>): Insumo {
       })
     : undefined;
 
+  // O Flow guarda o preço da EMBALAGEM e o tamanho dela. O que serve para
+  // análise é a divisão dos dois — R$ 7,77 o óleo de 0,900 L são R$ 8,63 o
+  // litro. É a mesma conta que o Flow mostra na coluna "custo por unidade".
+  //
+  // A divisão é feita aqui, e não em cada análise, porque o custo de esquecer
+  // é alto e silencioso: comparando preço de embalagem entre dois dias, uma
+  // compra de pacote maior vira "o fornecedor aumentou 124%".
+  const precoEmbalagem = num(b.preco);
+  const qtdEmbalagem = num(b.qtd);
+  const unitario =
+    precoEmbalagem !== undefined && qtdEmbalagem !== undefined && qtdEmbalagem > 0
+      ? precoEmbalagem / qtdEmbalagem
+      // Sem quantidade (101 insumos da carteira), o melhor palpite é que a
+      // embalagem é a própria unidade. É o que o Flow assume ao exibir.
+      : precoEmbalagem;
+
   return {
     id: String(b.id ?? ''),
     nome: String(b.nome ?? ''),
     categoria: String(b.cat ?? ''),
     subcategoria: texto(b.sub),
-    preco: num(b.preco),
+    preco: unitario,
+    precoEmbalagem,
+    qtdEmbalagem,
     unidade: String(b.uni ?? ''),
     fornecedor: texto(b.fornecedor),
     tipo: texto(b.tipo) as Insumo['tipo'],

@@ -244,6 +244,11 @@ export default async function Cliente({
           Nota fiscal entra quando o cliente compra — semanal, quinzenal, sem cadência.
           Por isso aqui não há janela de mês: o radar guarda um retrato do cadastro de
           preços a cada rodada e mostra o dia em que cada preço mudou.
+          {' '}
+          <strong>Os valores são por unidade de medida</strong> — o quilo, o litro, a
+          unidade — e não o preço da embalagem. O Flow guarda R$ 7,77 o óleo de 900 ml;
+          aqui aparece R$ 8,63 o litro. Sem isso, comprar um pacote maior parece
+          aumento de preço.
         </p>
         {r.precos.retratos < 2 ? (
           <p className="aviso">
@@ -271,8 +276,8 @@ export default async function Cliente({
                     {m.categoria && <span className="legenda"> · {m.categoria}</span>}
                   </td>
                   <td>{m.fornecedor ?? '—'}</td>
-                  <td className="num">{reais(m.de)}</td>
-                  <td className="num">{reais(m.para)}</td>
+                  <td className="num">{reais(m.de)}<span className="legenda">/{m.unidade}</span></td>
+                  <td className="num">{reais(m.para)}<span className="legenda">/{m.unidade}</span></td>
                   <td className={`num ${m.variacao > 0 ? 'critico' : 'melhorou'}`}>
                     {m.unidadeMudou ? '—' : pct(m.variacao)}
                   </td>

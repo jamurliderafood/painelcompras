@@ -103,3 +103,50 @@ test('cliente sem lançamento nenhum não é erro de leitura — é cliente para
   assert.ok(org.dados.endpointsOk.includes('organizacoes'));
   assert.equal(org.dados.endpointsErro.length, 0);
 });
+
+test('o preço do insumo é por unidade de medida, não da embalagem', () => {
+  // O Flow guarda o preço da embalagem e o tamanho dela. O óleo de 900 ml
+  // custa R$ 7,77 o frasco — R$ 8,63 o litro. É o litro que serve para
+  // comparar.
+  const i = insumoDe({
+    id: 'oleo', nome: 'Oleo de Soja 900ml', cat: 'Mercearia',
+    uni: 'L', preco: 7.77, qtd: 0.9, tipo: 'pronto',
+  });
+  assert.ok(Math.abs(i.preco! - 8.6333) < 0.001);
+  assert.equal(i.precoEmbalagem, 7.77);
+  assert.equal(i.qtdEmbalagem, 0.9);
+  assert.equal(i.unidade, 'L');
+});
+
+test('embalagem maior não vira aumento de preço', () => {
+  // O caso que apareceu no painel em 29/08/2026: o alho-poró "subiu 124%"
+  // entre duas coletas, e o que mudou foi o tamanho da compra. Em preço por
+  // quilo, os dois são o mesmo preço.
+  const antes = insumoDe({ id: 'a', nome: 'Alho Poró', cat: 'Hortifruti', uni: 'kg', preco: 20.20, qtd: 0.751 });
+  const agora = insumoDe({ id: 'a', nome: 'Alho Poró', cat: 'Hortifruti', uni: 'kg', preco: 45.33, qtd: 1.685 });
+
+  assert.ok(Math.abs(antes.preco! - 26.90) < 0.05, `antes deu ${antes.preco}`);
+  assert.ok(Math.abs(agora.preco! - 26.90) < 0.05, `agora deu ${agora.preco}`);
+  // A variação que o painel mostraria: praticamente zero, e não +124%.
+  const variacao = (agora.preco! - antes.preco!) / antes.preco!;
+  assert.ok(Math.abs(variacao) < 0.02, `variação de ${(variacao * 100).toFixed(0)}%`);
+});
+
+test('embalagem de tamanho 1 deixa o preço como está', () => {
+  // 2.025 dos 3.903 insumos da carteira são assim — a conta não pode
+  // atrapalhar o caso simples.
+  const i = insumoDe({ id: 'c', nome: 'Codornas', cat: 'Aves', uni: 'un', preco: 235, qtd: 1 });
+  assert.equal(i.preco, 235);
+});
+
+test('insumo sem quantidade cadastrada assume embalagem unitária', () => {
+  const i = insumoDe({ id: 'x', nome: 'Sem qtd', cat: 'X', uni: 'kg', preco: 12.5 });
+  assert.equal(i.preco, 12.5);
+  assert.equal(i.qtdEmbalagem, undefined);
+});
+
+test('quantidade zero não vira divisão por zero', () => {
+  const i = insumoDe({ id: 'x', nome: 'Zerado', cat: 'X', uni: 'kg', preco: 10, qtd: 0 });
+  assert.equal(i.preco, 10);
+  assert.ok(Number.isFinite(i.preco!));
+});
