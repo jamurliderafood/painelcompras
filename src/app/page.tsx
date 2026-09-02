@@ -182,8 +182,24 @@ export default async function Painel({
                 coletas, então a partir da próxima rodada o radar mostra o que mudou.
               </p>
             ) : r.precos.altas.length === 0 && r.precos.quedas.length === 0 ? (
+              // Sem variação, o cartão mostra o último preço que entrou. Dizer
+              // só "nenhum insumo mudou" faz quem lê concluir que os preços
+              // estão estáveis, quando o certo é "não vi nada mudar no intervalo
+              // que acompanhei" — e com dois dias de histórico essa diferença é
+              // tudo. O preço mais recente dá o que olhar e mostra que o radar
+              // está enxergando o cliente.
               <p className="linha-compras legenda">
-                Nenhum insumo mudou de preço desde {r.precos.primeiroRetrato}.
+                Nenhum preço mudou entre {r.precos.primeiroRetrato} e{' '}
+                {r.precos.ultimoRetrato}.
+                {r.precos.ultimosAtualizados[0] && (
+                  <> Último preço que entrou:{' '}
+                    <strong>{r.precos.ultimosAtualizados[0].nome}</strong>,{' '}
+                    {moeda(r.precos.ultimosAtualizados[0].preco)}
+                    /{r.precos.ultimosAtualizados[0].unidade || '?'} em{' '}
+                    {r.precos.ultimosAtualizados[0].data.slice(8)}/
+                    {r.precos.ultimosAtualizados[0].data.slice(5, 7)}.
+                  </>
+                )}
               </p>
             ) : (
               <p className="linha-compras">
@@ -195,13 +211,15 @@ export default async function Painel({
                     <span className="rotulo"> em {m.detectadaEm.slice(8)}/{m.detectadaEm.slice(5, 7)}</span>
                   </span>
                 ))}
-                {r.precos.quedas.length > 0 && (
-                  <>
-                    {r.precos.altas.length > 0 && ' · '}
-                    <span className="melhorou">
-                      {r.precos.quedas.length} em queda
-                    </span>
-                  </>
+                {r.precos.quedas.slice(0, 3).map((m, i) => (
+                  <span key={m.insumoId}>
+                    {i > 0 && ' · '}
+                    {m.nome} <strong className="melhorou">{pct(m.variacao)}</strong>
+                    <span className="rotulo"> em {m.detectadaEm.slice(8)}/{m.detectadaEm.slice(5, 7)}</span>
+                  </span>
+                ))}
+                {r.precos.quedasOcultas > 0 && (
+                  <span className="rotulo"> · e {r.precos.quedasOcultas} em queda</span>
                 )}
               </p>
             )}

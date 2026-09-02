@@ -25,7 +25,7 @@
  * de mostrar uma lista vazia com cara de "está tudo estável".
  */
 
-import type { DataISO, RetratoPreco } from '../flow/tipos';
+import type { DataISO, Insumo, Lancamento, RetratoPreco } from '../flow/tipos';
 
 export type { RetratoPreco };
 
@@ -114,15 +114,83 @@ export function mudancasDePreco(
     .sort((a, b) => b.detectadaEm.localeCompare(a.detectadaEm) || Math.abs(b.variacao) - Math.abs(a.variacao));
 }
 
+/** Um preço que acabou de ser posto no cadastro por uma compra. */
+export interface PrecoAtualizado {
+  insumoId: string;
+  nome: string;
+  unidade: string;
+  /** Preço por unidade de medida, saído da nota: valor ÷ quantidade. */
+  preco: number;
+  data: DataISO;
+  fornecedor?: string;
+  quantidade: number;
+  valorDaCompra: number;
+}
+
 export interface ResumoPrecos {
   /** Quantos retratos existem. Com menos de dois não há o que comparar. */
   retratos: number;
   primeiroRetrato?: DataISO;
   ultimoRetrato?: DataISO;
+  /** As altas a mostrar, já pela régua: acima de 5% aparecem todas; abaixo,
+   *  só as cinco maiores. */
   altas: MudancaPreco[];
+  /** Só preenchido quando NÃO há alta nenhuma. Notícia boa não pode empurrar
+   *  notícia ruim para baixo da dobra. */
   quedas: MudancaPreco[];
+  /** Quantas quedas existem quando elas não estão sendo listadas. O painel
+   *  diz o número sem gastar espaço com a lista. */
+  quedasOcultas: number;
   /** Mudanças em que a embalagem mudou junto — a porcentagem não vale. */
   suspeitas: MudancaPreco[];
+  /** Os preços postos no cadastro mais recentemente. Existe para a seção nunca
+   *  ficar vazia: sem isso, num dia em que nada mudou, o painel não dá o que
+   *  olhar — e "nada mudou" é indistinguível de "não estou vendo nada". */
+  ultimosAtualizados: PrecoAtualizado[];
+}
+
+/**
+ * Os preços postos no cadastro mais recentemente.
+ *
+ * O cadastro de insumo do Flow **não guarda data de atualização** — não há
+ * campo. Quem carrega essa informação é o lançamento de compra: é ele que
+ * atualiza o preço, e ele é datado. Então "preço atualizado em" é a data da
+ * última compra daquele insumo, e o preço é o que saiu daquela nota.
+ *
+ * Um insumo por linha, a compra mais recente de cada. Comprar o mesmo item
+ * três vezes na semana não deve ocupar três linhas.
+ */
+export function ultimosPrecosAtualizados(
+  lancamentos: Lancamento[],
+  insumos: Insumo[],
+  limite = 8,
+): PrecoAtualizado[] {
+  const nomeDe = new Map(insumos.map((i) => [i.id, i]));
+  const porInsumo = new Map<string, PrecoAtualizado>();
+
+  const compras = lancamentos
+    .filter((l) => l.grupo === 'CMV' && l.insumoId && l.qtd && l.qtd > 0 && l.valor > 0)
+    .sort((a, b) => a.data.localeCompare(b.data));
+
+  // Percorrendo do mais antigo para o mais novo, a última escrita vence — e a
+  // última é a compra mais recente.
+  for (const l of compras) {
+    const i = nomeDe.get(l.insumoId!);
+    porInsumo.set(l.insumoId!, {
+      insumoId: l.insumoId!,
+      nome: i?.nome ?? l.descricao ?? l.insumoId!,
+      unidade: (l.uni ?? i?.unidade ?? '').toLowerCase(),
+      preco: l.valor / l.qtd!,
+      data: l.data,
+      fornecedor: l.fornecedor,
+      quantidade: l.qtd!,
+      valorDaCompra: l.valor,
+    });
+  }
+
+  return [...porInsumo.values()]
+    .sort((a, b) => b.data.localeCompare(a.data))
+    .slice(0, limite);
 }
 
 /** As mudanças dos últimos `janelaDias` dias, separadas por direção.
@@ -130,11 +198,33 @@ export interface ResumoPrecos {
  *  A janela aqui existe só para o painel não crescer sem fim; ela não define a
  *  análise. Um preço que mudou há 40 dias e não mudou mais continua sendo o
  *  preço vigente, e aparece no histórico do insumo. */
+/**
+ * A régua de exibição, definida pelo Jamur:
+ *
+ *   1. insumo que **subiu 5% ou mais** aparece — todos, sem limite;
+ *   2. subiu menos que isso, aparecem só os **cinco maiores**;
+ *   3. se não subiu nenhum, aí sim aparecem as **quedas**.
+ *
+ * A ordem é a mesma do resto do painel: a má notícia primeiro e inteira, a boa
+ * só quando não há má. Queda de preço é ótima e não é urgente — listá-la ao
+ * lado de uma alta de 40% empurraria a alta para baixo da dobra.
+ *
+ * Quando há altas, as quedas viram um número (`quedasOcultas`) em vez de uma
+ * lista: quem lê fica sabendo que existem sem perder a alta de vista.
+ */
+const PISO_DESTAQUE = 0.05;
+const LIMITE_ABAIXO_DO_PISO = 5;
+
 export function resumirPrecos(
   retratos: RetratoPreco[],
   ate: DataISO,
   janelaDias = 30,
-  pisoVariacao = 0.03,
+  /** Abaixo disto é poeira de arredondamento, não movimento de preço. O corte
+   *  de verdade é o `PISO_DESTAQUE` de 5%; este aqui só evita encher as cinco
+   *  vagas com variações de 0,2%. */
+  pisoVariacao = 0.01,
+  lancamentos: Lancamento[] = [],
+  insumos: Insumo[] = [],
 ): ResumoPrecos {
   const ordenados = [...retratos].sort((a, b) => a.data.localeCompare(b.data));
   const desde = new Date(Date.parse(ate) - janelaDias * 86_400_000).toISOString().slice(0, 10);
@@ -144,13 +234,30 @@ export function resumirPrecos(
   // zero de preço e ainda assim ser a maior mudança de custo do mês.
   const relevantes = todas.filter((m) => m.unidadeMudou || Math.abs(m.variacao) >= pisoVariacao);
 
+  const porTamanho = (a: MudancaPreco, b: MudancaPreco) =>
+    Math.abs(b.variacao) - Math.abs(a.variacao);
+
+  const subiram = relevantes
+    .filter((m) => !m.unidadeMudou && m.variacao > 0)
+    .sort(porTamanho);
+  const cairam = relevantes
+    .filter((m) => !m.unidadeMudou && m.variacao < 0)
+    .sort(porTamanho);
+
+  const altas = [
+    ...subiram.filter((m) => m.variacao >= PISO_DESTAQUE),
+    ...subiram.filter((m) => m.variacao < PISO_DESTAQUE).slice(0, LIMITE_ABAIXO_DO_PISO),
+  ];
+
   return {
     retratos: ordenados.length,
     primeiroRetrato: ordenados[0]?.data,
     ultimoRetrato: ordenados[ordenados.length - 1]?.data,
-    altas: relevantes.filter((m) => !m.unidadeMudou && m.variacao > 0),
-    quedas: relevantes.filter((m) => !m.unidadeMudou && m.variacao < 0),
+    altas,
+    quedas: altas.length ? [] : cairam.slice(0, LIMITE_ABAIXO_DO_PISO),
+    quedasOcultas: altas.length ? cairam.length : 0,
     suspeitas: relevantes.filter((m) => m.unidadeMudou),
+    ultimosAtualizados: ultimosPrecosAtualizados(lancamentos, insumos),
   };
 }
 

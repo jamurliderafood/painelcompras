@@ -297,7 +297,12 @@ export async function analisarCliente(
   const porData = new Map<DataISO, RetratoPreco>();
   for (const r of [...historicoPrecos, ...(dados.retratosPreco ?? [])]) porData.set(r.data, r);
   porData.set(data, { data, insumos: dados.insumos });
-  const precos = resumirPrecos([...porData.values()], data);
+  const precos = resumirPrecos(
+    [...porData.values()], data, undefined, undefined,
+    // Os lançamentos entram para a lista de "últimos preços atualizados": o
+    // cadastro não guarda quando o preço foi posto, e a compra guarda.
+    dados.lancamentos, dados.insumos,
+  );
 
   const situacao: RelatorioCliente['situacao'] =
     dados.endpointsOk.length === 0 ? 'erro' : dados.endpointsErro.length ? 'parcial' : 'ok';

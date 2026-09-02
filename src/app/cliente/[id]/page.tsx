@@ -249,6 +249,10 @@ export default async function Cliente({
           unidade — e não o preço da embalagem. O Flow guarda R$ 7,77 o óleo de 900 ml;
           aqui aparece R$ 8,63 o litro. Sem isso, comprar um pacote maior parece
           aumento de preço.
+          {' '}
+          Alta de <strong>5% ou mais</strong> aparece sempre; abaixo disso, as cinco
+          maiores. Quedas só entram quando não há nenhuma alta — notícia boa não
+          empurra notícia ruim para baixo da dobra.
         </p>
         {r.precos.retratos < 2 ? (
           <p className="aviso">
@@ -294,6 +298,55 @@ export default async function Cliente({
               ))}
             </tbody>
           </table>
+        )}
+
+        {r.precos.quedasOcultas > 0 && (
+          <p className="legenda">
+            E {r.precos.quedasOcultas} insumo{r.precos.quedasOcultas === 1 ? '' : 's'}{' '}
+            {r.precos.quedasOcultas === 1 ? 'ficou' : 'ficaram'} mais barato
+            {r.precos.quedasOcultas === 1 ? '' : 's'} no período — não listados aqui
+            para não disputar espaço com as altas.
+          </p>
+        )}
+
+        {r.precos.ultimosAtualizados.length > 0 && (
+          <>
+            <h3>Últimos preços atualizados</h3>
+            <p className="legenda">
+              O cadastro do Flow não guarda quando o preço foi posto; quem guarda é a
+              compra. Estes são os preços que entraram por último, com a nota que os
+              trouxe — a lista existe para você ter o que olhar mesmo num dia em que
+              nada variou.
+            </p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Insumo</th><th>Fornecedor</th>
+                  <th className="num">Preço</th><th className="num">Compra</th>
+                  <th>Quando</th>
+                </tr>
+              </thead>
+              <tbody>
+                {r.precos.ultimosAtualizados.map((p) => (
+                  <tr key={p.insumoId + p.data}>
+                    <td>{p.nome}</td>
+                    <td>{p.fornecedor ?? '—'}</td>
+                    <td className="num">
+                      {reais(p.preco)}<span className="legenda">/{p.unidade || '?'}</span>
+                    </td>
+                    <td className="num">
+                      {reais(p.valorDaCompra)}
+                      <br />
+                      <span className="legenda">
+                        {p.quantidade.toLocaleString('pt-BR')} {p.unidade}
+                      </span>
+                    </td>
+                    <td>{br(p.data)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         )}
       </div>
 

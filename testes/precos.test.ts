@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { historicoDoInsumo, mudancasDePreco, resumirPrecos } from '../src/analise/precos';
+import { historicoDoInsumo, mudancasDePreco, resumirPrecos, ultimosPrecosAtualizados } from '../src/analise/precos';
 import type { Insumo, RetratoPreco } from '../src/flow/tipos';
 
 const ins = (id: string, preco?: number, unidade = 'kg'): Insumo => ({
@@ -98,4 +98,113 @@ test('preço saindo de zero não inventa percentual', () => {
     retrato('2026-08-02', ins('novo', 12)),
   ]);
   assert.deepEqual(r, []);
+});
+
+// --- a régua de exibição, definida pelo Jamur ---------------------------
+
+const sobe = (id: string, de: number, para: number) => [
+  retrato('2026-09-01', ins(id, de)),
+  retrato('2026-09-02', ins(id, para)),
+];
+
+test('alta de 5% ou mais aparece sempre, sem limite de quantidade', () => {
+  // Seis insumos subindo mais de 5%: os seis aparecem. Cortar em cinco
+  // esconderia uma alta relevante para caber na tela.
+  const insumos = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const r = resumirPrecos([
+    retrato('2026-09-01', ...insumos.map((i) => ins(i, 10))),
+    retrato('2026-09-02', ...insumos.map((i) => ins(i, 11))), // +10%
+  ], '2026-09-02');
+
+  assert.equal(r.altas.length, 6);
+});
+
+test('alta abaixo de 5% mostra só as cinco maiores', () => {
+  const insumos = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+  const r = resumirPrecos([
+    retrato('2026-09-01', ...insumos.map((i) => ins(i, 100))),
+    // +2% em todos: nenhum passa dos 5%.
+    retrato('2026-09-02', ...insumos.map((i) => ins(i, 102))),
+  ], '2026-09-02');
+
+  assert.equal(r.altas.length, 5);
+  assert.ok(r.altas.every((m) => m.variacao < 0.05));
+});
+
+test('as duas faixas convivem: as grandes inteiras, as pequenas cortadas', () => {
+  const r = resumirPrecos([
+    retrato('2026-09-01',
+      ins('grande1', 10), ins('grande2', 10),
+      ...['p1', 'p2', 'p3', 'p4', 'p5', 'p6'].map((i) => ins(i, 100))),
+    retrato('2026-09-02',
+      ins('grande1', 15), ins('grande2', 14),
+      ...['p1', 'p2', 'p3', 'p4', 'p5', 'p6'].map((i) => ins(i, 102))),
+  ], '2026-09-02');
+
+  // 2 acima de 5% + 5 abaixo = 7
+  assert.equal(r.altas.length, 7);
+  assert.equal(r.altas.filter((m) => m.variacao >= 0.05).length, 2);
+});
+
+test('havendo alta, as quedas viram um número e não uma lista', () => {
+  const r = resumirPrecos([
+    retrato('2026-09-01', ins('subiu', 10), ins('caiu1', 10), ins('caiu2', 10)),
+    retrato('2026-09-02', ins('subiu', 12), ins('caiu1', 8), ins('caiu2', 7)),
+  ], '2026-09-02');
+
+  assert.equal(r.altas.length, 1);
+  assert.deepEqual(r.quedas, []);
+  assert.equal(r.quedasOcultas, 2);
+});
+
+test('sem nenhuma alta, as quedas aparecem', () => {
+  const r = resumirPrecos([
+    retrato('2026-09-01', ins('caiu1', 10), ins('caiu2', 10)),
+    retrato('2026-09-02', ins('caiu1', 8), ins('caiu2', 7)),
+  ], '2026-09-02');
+
+  assert.equal(r.altas.length, 0);
+  assert.equal(r.quedas.length, 2);
+  assert.equal(r.quedasOcultas, 0);
+  // A maior queda primeiro.
+  assert.equal(r.quedas[0].insumoId, 'caiu2');
+});
+
+// --- últimos preços atualizados ----------------------------------------
+
+test('o preço atualizado sai da compra, porque o cadastro não tem data', () => {
+  // Os números do King em 01/09/2026: R$ 717,89 por 20,57 kg de acém.
+  const u = ultimosPrecosAtualizados([
+    { id: 'l1', data: '2026-09-01', grupo: 'CMV', valor: 717.89, qtd: 20.57,
+      uni: 'kg', insumoId: 'acem', fornecedor: 'MAURICIO ACOUGUE' },
+  ], [ins('acem')].map((i) => ({ ...i, nome: 'ACEM' })));
+
+  assert.equal(u.length, 1);
+  assert.ok(Math.abs(u[0].preco - 34.8999) < 0.001);
+  assert.equal(u[0].nome, 'ACEM');
+  assert.equal(u[0].unidade, 'kg');
+  assert.equal(u[0].fornecedor, 'MAURICIO ACOUGUE');
+});
+
+test('comprar o mesmo insumo três vezes não ocupa três linhas', () => {
+  const compra = (data: string, valor: number) => ({
+    id: data, data, grupo: 'CMV', valor, qtd: 10, uni: 'kg', insumoId: 'acem',
+  });
+  const u = ultimosPrecosAtualizados(
+    [compra('2026-09-01', 300), compra('2026-09-03', 350), compra('2026-09-02', 320)],
+    [{ ...ins('acem'), nome: 'ACEM' }],
+  );
+
+  assert.equal(u.length, 1);
+  // A compra mais recente é a que vale.
+  assert.equal(u[0].data, '2026-09-03');
+  assert.equal(u[0].preco, 35);
+});
+
+test('compra sem quantidade não vira preço atualizado', () => {
+  const u = ultimosPrecosAtualizados(
+    [{ id: 'x', data: '2026-09-01', grupo: 'CMV', valor: 300, insumoId: 'acem' }],
+    [{ ...ins('acem'), nome: 'ACEM' }],
+  );
+  assert.deepEqual(u, []);
 });
