@@ -19,6 +19,41 @@ import { abrirCarteira, fonteDe, listarClientes } from './clientes';
 import { analisarCliente, type RelatorioCliente } from './rodar';
 import { lerRelatorio, lerRelatorios, temBanco } from '../db/supabase';
 
+/**
+ * Completa uma foto gravada por uma versão anterior do radar.
+ *
+ * O relatório guardado no banco é um **contrato entre versões**: a rodada de
+ * hoje grava, e o painel de amanhã — já com código novo — lê. Campo que eu
+ * acrescento hoje não existe nas fotos de ontem, e ler `undefined[0]` derruba
+ * a página inteira. Foi o que aconteceu em 02/09/2026, quando `ultimosAtualizados`
+ * entrou: o painel subiu quebrado até a rodada seguinte regravar as fotos.
+ *
+ * A alternativa seria versionar o payload e migrar. Para um relatório que é
+ * regravado todo dia às 5h, completar o que falta na leitura custa menos e
+ * falha melhor: no pior caso a seção nova fica vazia por um dia.
+ */
+export function completar(r: RelatorioCliente): RelatorioCliente {
+  return {
+    ...r,
+    diagnostico: { ...r.diagnostico, periodoRecemComecado: r.diagnostico?.periodoRecemComecado ?? false },
+    metricas: r.metricas ?? {},
+    precos: {
+      ...r.precos,
+      altas: r.precos?.altas ?? [],
+      quedas: r.precos?.quedas ?? [],
+      suspeitas: r.precos?.suspeitas ?? [],
+      quedasOcultas: r.precos?.quedasOcultas ?? 0,
+      ultimosAtualizados: r.precos?.ultimosAtualizados ?? [],
+    },
+    precoPago: r.precoPago ?? {
+      altas: [], quedas: [], ignoradasPorUnidade: 0,
+      comprasSemQuantidade: 0, comprasTotal: 0,
+    },
+    decomposicao: r.decomposicao ?? { efeitos: [] },
+    gastos: r.gastos ?? { altas: [], quedas: [], suspeitaDeRenomeacao: false },
+  };
+}
+
 export interface Falha {
   clienteId: string;
   nome: string;
@@ -40,7 +75,7 @@ export async function carregarCarteira(data: DataISO): Promise<CarteiraDoDia> {
     const salvos = await lerRelatorios(data);
     if (salvos.length) {
       return {
-        relatorios: salvos.map((s) => s.relatorio),
+        relatorios: salvos.map((s) => completar(s.relatorio)),
         fonte: 'banco',
         // O mais antigo, não o mais novo: se um cliente foi atualizado agora e
         // os outros são das 5h, dizer "atualizado agora" mentiria sobre
@@ -63,7 +98,7 @@ export async function carregarCliente(id: string, data: DataISO): Promise<Client
   if (temBanco()) {
     const salvo = await lerRelatorio(id, data);
     if (salvo) {
-      return { relatorio: salvo.relatorio, fonte: 'banco', apuradoEm: salvo.apuradoEm };
+      return { relatorio: completar(salvo.relatorio), fonte: 'banco', apuradoEm: salvo.apuradoEm };
     }
   }
 
@@ -100,3 +135,7 @@ async function aoVivo(data: DataISO): Promise<Array<RelatorioCliente | Falha>> {
     }),
   );
 }
+
+/** Só para o teste — o nome deixa claro que ninguém deve chamar isto em
+ *  produção sem passar pelo carregamento. */
+export { completar as completarParaTeste };
